@@ -38,7 +38,6 @@ accounts.get('/', async (c) => {
     return c.json({ accounts: data || [] });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/accounts:', error);
     throw error;
   }
@@ -87,7 +86,6 @@ accounts.post('/initialize', async (c) => {
     logger.info(`Initialized ${data.length} accounts for organization ${user.organizationId}`);
     return c.json({ message: 'Chart of accounts initialized successfully', count: data.length });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in POST /api/accounts/initialize:', error);
     throw error;
@@ -151,7 +149,6 @@ accounts.post('/', async (c) => {
     return c.json({ account: data }, 201);
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in POST /api/accounts:', error);
     throw error;
   }
@@ -200,7 +197,6 @@ accounts.put('/:id', async (c) => {
     logger.info(`Updated account ${accountId}`);
     return c.json({ account: data });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in PUT /api/accounts/:id:', error);
     throw error;
@@ -265,7 +261,6 @@ accounts.get('/balances', async (c) => {
 
     return c.json({ balances, asOfDate });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/accounts/balances:', error);
     throw error;

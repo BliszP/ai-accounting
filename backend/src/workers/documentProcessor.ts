@@ -195,6 +195,11 @@ export async function processDocument(documentId: string): Promise<void> {
       contentForExtraction = parsedText;
       mimeTypeForExtraction = 'text/plain';
 
+      // Feed parsed text through the optimized multi-month pipeline (same as text-based PDFs).
+      // Without this, CSV goes through single-pass extraction which hits the 32K token limit
+      // on multi-month statements (e.g. 8 months → only 5 extracted due to truncation).
+      extractedText = parsedText;
+
       logger.info('File pre-parsed successfully', {
         documentId,
         originalMimeType: document.mime_type,

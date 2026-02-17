@@ -52,7 +52,6 @@ documents.get('/', async (c) => {
     return c.json({ documents: data || [] });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/documents:', error);
     throw error;
   }
@@ -88,7 +87,6 @@ documents.get('/:id', async (c) => {
 
     return c.json({ document: data });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/documents/:id:', error);
     throw error;
@@ -194,7 +192,6 @@ documents.post('/upload-url', async (c) => {
     });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in POST /api/documents/upload-url:', error);
     throw error;
   }
@@ -256,7 +253,6 @@ documents.post('/:id/complete', async (c) => {
     });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in POST /api/documents/:id/complete:', error);
     throw error;
   }
@@ -316,7 +312,6 @@ documents.delete('/:id', async (c) => {
     return c.json({ message: 'Document deleted successfully' });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in DELETE /api/documents/:id:', error);
     throw error;
   }
@@ -354,7 +349,6 @@ documents.get('/stats/overview', async (c) => {
 
     return c.json({ stats });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/documents/stats/overview:', error);
     throw error;

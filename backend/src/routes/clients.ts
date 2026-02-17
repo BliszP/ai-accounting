@@ -38,7 +38,6 @@ clients.get('/', async (c) => {
     return c.json({ clients: data || [] });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/clients:', error);
     throw error;
   }
@@ -67,7 +66,6 @@ clients.get('/:id', async (c) => {
 
     return c.json({ client: data });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/clients/:id:', error);
     throw error;
@@ -121,7 +119,6 @@ clients.post('/', async (c) => {
     logger.info(`Client created: ${data.id}`);
     return c.json({ client: data }, 201);
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in POST /api/clients:', error);
     throw error;
@@ -178,7 +175,6 @@ clients.put('/:id', async (c) => {
     return c.json({ client: data });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in PUT /api/clients/:id:', error);
     throw error;
   }
@@ -233,7 +229,6 @@ clients.delete('/:id', async (c) => {
     logger.info(`Client deleted: ${clientId}`);
     return c.json({ message: 'Client deleted successfully' });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in DELETE /api/clients/:id:', error);
     throw error;
@@ -302,7 +297,6 @@ clients.get('/:id/stats', async (c) => {
       },
     });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/clients/:id/stats:', error);
     throw error;
@@ -425,7 +419,6 @@ clients.get('/:id/balance', async (c) => {
       }),
     });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/clients/:id/balance:', error);
     throw error;

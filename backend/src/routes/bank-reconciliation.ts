@@ -42,7 +42,6 @@ bankReconciliation.get('/accounts', async (c) => {
     return c.json({ accounts: accounts || [] });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/bank-reconciliation/accounts:', error);
     throw error;
   }
@@ -88,7 +87,6 @@ bankReconciliation.get('/unreconciled', async (c) => {
 
     return c.json({ entries: entries || [] });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/bank-reconciliation/unreconciled:', error);
     throw error;
@@ -147,7 +145,6 @@ bankReconciliation.post('/mark-reconciled', async (c) => {
       reconciled_count: validated.entryIds.length,
     });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in POST /api/bank-reconciliation/mark-reconciled:', error);
     throw error;
@@ -214,7 +211,6 @@ bankReconciliation.get('/summary', async (c) => {
       },
     });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/bank-reconciliation/summary:', error);
     throw error;

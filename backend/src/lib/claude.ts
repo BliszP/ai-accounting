@@ -5,10 +5,14 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import Decimal from 'decimal.js';
 import { env } from '../config/environment.js';
 import { logger } from './logger.js';
 import { isLargeDocument, detectStatementDateRange } from './pdfProcessor.js';
 import { detectDateRangeFromText, splitTextByMonth } from './pdfTextExtractor.js';
+
+// Configure Decimal.js for financial precision
+Decimal.set({ precision: 20, rounding: Decimal.ROUND_HALF_UP });
 
 /**
  * Initialize Anthropic client
@@ -79,9 +83,6 @@ interface BalanceVerificationResult {
   balanceCoverage: number;
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
 
 /**
  * Verify the balance chain for a set of transactions.
@@ -126,15 +127,17 @@ function verifyBalanceChain(
     }
 
     if (previousBalance !== null) {
-      const delta = txn.type === 'credit' ? txn.amount : -txn.amount;
-      const expectedBalance = round2(previousBalance + delta);
-      const discrepancy = round2(txn.balance - expectedBalance);
+      const prevDec = new Decimal(previousBalance);
+      const amtDec = new Decimal(txn.amount);
+      const delta = txn.type === 'credit' ? amtDec : amtDec.neg();
+      const expectedBalance = prevDec.add(delta).toDecimalPlaces(2).toNumber();
+      const discrepancy = new Decimal(txn.balance).minus(expectedBalance).toDecimalPlaces(2).toNumber();
 
-      if (Math.abs(discrepancy) < 0.015) {
+      if (new Decimal(discrepancy).abs().toNumber() < 0.015) {
         result.validLinks++;
       } else {
-        const correctDelta = round2(txn.balance - previousBalance);
-        const correctedAmount = round2(Math.abs(correctDelta));
+        const correctDelta = new Decimal(txn.balance).minus(previousBalance).toDecimalPlaces(2).toNumber();
+        const correctedAmount = new Decimal(correctDelta).abs().toDecimalPlaces(2).toNumber();
 
         result.brokenLinks.push({
           index: i,
@@ -157,8 +160,9 @@ function verifyBalanceChain(
   }
 
   if (closingBalance !== null && previousBalance !== null) {
-    if (Math.abs(previousBalance - closingBalance) > 0.015) {
-      logger.warn(`${monthLabel}: Chain ending balance £${previousBalance.toFixed(2)} != closing balance £${closingBalance.toFixed(2)}`);
+    const closingDiff = new Decimal(previousBalance).minus(closingBalance).abs().toNumber();
+    if (closingDiff > 0.015) {
+      logger.warn(`${monthLabel}: Chain ending balance £${previousBalance.toFixed(2)} != closing balance £${closingBalance.toFixed(2)} (diff: £${closingDiff.toFixed(2)})`);
     }
   }
 
@@ -207,12 +211,12 @@ function applyBalanceCorrections(
 
     if (previousBalance === null || txn.balance === null) continue;
 
-    const delta = txn.balance - previousBalance;
+    const delta = new Decimal(txn.balance).minus(previousBalance).toNumber();
     const inferredType: 'debit' | 'credit' = delta >= 0 ? 'credit' : 'debit';
-    const inferredAmount = round2(Math.abs(delta));
+    const inferredAmount = new Decimal(delta).abs().toDecimalPlaces(2).toNumber();
 
     if (inferredType === txn.type) {
-      const diff = round2(Math.abs(inferredAmount - txn.amount));
+      const diff = new Decimal(inferredAmount).minus(txn.amount).abs().toDecimalPlaces(2).toNumber();
 
       if (diff < 10) {
         corrected[broken.index] = {

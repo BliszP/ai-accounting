@@ -96,14 +96,11 @@ reports.get('/trial-balance', async (c) => {
       };
     }) || [];
 
-    // Calculate totals
-    const totalDebits = accountBalances
-      .map(acc => parseFloat(acc.debit_balance))
-      .reduce((sum, amt) => sum + amt, 0);
-
-    const totalCredits = accountBalances
-      .map(acc => parseFloat(acc.credit_balance))
-      .reduce((sum, amt) => sum + amt, 0);
+    // Calculate totals using Decimal.js for financial precision
+    const debitAmounts = accountBalances.map(acc => parseFloat(acc.debit_balance)).filter(n => n > 0);
+    const creditAmounts = accountBalances.map(acc => parseFloat(acc.credit_balance)).filter(n => n > 0);
+    const totalDebits = debitAmounts.length > 0 ? addAmounts(...debitAmounts) : 0;
+    const totalCredits = creditAmounts.length > 0 ? addAmounts(...creditAmounts) : 0;
 
     // Filter out zero balances
     const nonZeroBalances = accountBalances.filter(
@@ -117,11 +114,10 @@ reports.get('/trial-balance', async (c) => {
       totals: {
         total_debits: totalDebits.toFixed(2),
         total_credits: totalCredits.toFixed(2),
-        in_balance: Math.abs(totalDebits - totalCredits) < 0.01,
+        in_balance: Math.abs(subtractAmounts(totalDebits, totalCredits)) < 0.01,
       },
     });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/reports/trial-balance:', error);
     throw error;
@@ -226,14 +222,11 @@ reports.get('/profit-loss', async (c) => {
       }
     }
 
-    // Calculate totals
-    const totalIncome = incomeAccounts
-      .map(acc => parseFloat(acc.amount))
-      .reduce((sum, amt) => sum + amt, 0);
-
-    const totalExpenses = expenseAccounts
-      .map(acc => parseFloat(acc.amount))
-      .reduce((sum, amt) => sum + amt, 0);
+    // Calculate totals using Decimal.js for financial precision
+    const incomeAmounts = incomeAccounts.map(acc => parseFloat(acc.amount));
+    const expenseAmounts = expenseAccounts.map(acc => parseFloat(acc.amount));
+    const totalIncome = incomeAmounts.length > 0 ? addAmounts(...incomeAmounts) : 0;
+    const totalExpenses = expenseAmounts.length > 0 ? addAmounts(...expenseAmounts) : 0;
 
     const netProfit = subtractAmounts(totalIncome, totalExpenses);
 
@@ -254,7 +247,6 @@ reports.get('/profit-loss', async (c) => {
       net_profit: netProfit.toFixed(2),
     });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/reports/profit-loss:', error);
     throw error;
@@ -354,18 +346,13 @@ reports.get('/balance-sheet', async (c) => {
       }
     }
 
-    // Calculate totals
-    const totalAssets = assets
-      .map(acc => parseFloat(acc.amount))
-      .reduce((sum, amt) => sum + amt, 0);
-
-    const totalLiabilities = liabilities
-      .map(acc => parseFloat(acc.amount))
-      .reduce((sum, amt) => sum + amt, 0);
-
-    const totalEquity = equity
-      .map(acc => parseFloat(acc.amount))
-      .reduce((sum, amt) => sum + amt, 0);
+    // Calculate totals using Decimal.js for financial precision
+    const assetAmounts = assets.map(acc => parseFloat(acc.amount));
+    const liabilityAmounts = liabilities.map(acc => parseFloat(acc.amount));
+    const equityAmounts = equity.map(acc => parseFloat(acc.amount));
+    const totalAssets = assetAmounts.length > 0 ? addAmounts(...assetAmounts) : 0;
+    const totalLiabilities = liabilityAmounts.length > 0 ? addAmounts(...liabilityAmounts) : 0;
+    const totalEquity = equityAmounts.length > 0 ? addAmounts(...equityAmounts) : 0;
 
     const totalLiabilitiesAndEquity = addAmounts(totalLiabilities, totalEquity);
 
@@ -391,7 +378,6 @@ reports.get('/balance-sheet', async (c) => {
       },
     });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/reports/balance-sheet:', error);
     throw error;

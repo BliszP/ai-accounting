@@ -164,7 +164,6 @@ journalEntries.get('/', async (c) => {
     return c.json({ entries });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/journal-entries:', error);
     throw error;
   }
@@ -264,7 +263,6 @@ journalEntries.post('/', async (c) => {
     }, 201);
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in POST /api/journal-entries:', error);
     throw error;
   }
@@ -333,7 +331,6 @@ journalEntries.get('/:entryId', async (c) => {
     return c.json({ entry });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/journal-entries/:entryId:', error);
     throw error;
   }
@@ -374,7 +371,6 @@ journalEntries.delete('/:entryId', async (c) => {
     logger.info(`Deleted journal entry ${entryId}`);
     return c.json({ message: 'Journal entry deleted successfully' });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in DELETE /api/journal-entries/:entryId:', error);
     throw error;
@@ -620,7 +616,6 @@ journalEntries.post('/from-transactions/grouped', async (c) => {
     }, 201);
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in POST /api/journal-entries/from-transactions/grouped:', error);
     throw error;
   }
@@ -812,7 +807,6 @@ journalEntries.post('/from-transaction/:transactionId', async (c) => {
       },
     }, 201);
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in POST /api/journal-entries/from-transaction:', error);
     throw error;

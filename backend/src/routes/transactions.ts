@@ -72,7 +72,6 @@ transactions.get('/', async (c) => {
     return c.json({ transactions: data || [] });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/transactions:', error);
     throw error;
   }
@@ -113,7 +112,6 @@ transactions.get('/:id', async (c) => {
 
     return c.json({ transaction: data });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/transactions/:id:', error);
     throw error;
@@ -229,7 +227,6 @@ transactions.put('/:id', async (c) => {
     return c.json({ transaction: data });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in PUT /api/transactions/:id:', error);
     throw error;
   }
@@ -313,7 +310,6 @@ transactions.post('/bulk-approve', async (c) => {
     });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in POST /api/transactions/bulk-approve:', error);
     throw error;
   }
@@ -359,7 +355,6 @@ transactions.delete('/:id', async (c) => {
     logger.info(`Transaction deleted: ${transactionId}`);
     return c.json({ message: 'Transaction deleted successfully' });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in DELETE /api/transactions/:id:', error);
     throw error;
@@ -417,7 +412,6 @@ transactions.get('/stats/overview', async (c) => {
     return c.json({ stats });
   } catch (error) {
     if (error instanceof APIError) throw error;
-    if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/transactions/stats/overview:', error);
     throw error;
   }
@@ -457,7 +451,6 @@ transactions.get('/pending-review', async (c) => {
 
     return c.json({ transactions: data || [] });
   } catch (error) {
-    if (error instanceof APIError) throw error;
     if (error instanceof APIError) throw error;
     logger.error('Error in GET /api/transactions/pending-review:', error);
     throw error;

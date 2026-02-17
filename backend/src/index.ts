@@ -33,11 +33,16 @@ const app = new Hono();
  * Global middleware
  */
 
-// CORS
+// CORS - allow configured origin plus both common Vite dev ports
+const allowedOrigins = [
+  env.CORS_ORIGIN,
+  'http://localhost:5173',
+  'http://localhost:5174',
+];
 app.use(
   '*',
   cors({
-    origin: env.CORS_ORIGIN,
+    origin: (origin) => (allowedOrigins.includes(origin) ? origin : allowedOrigins[0]),
     credentials: true,
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],
