@@ -7,7 +7,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import apiClient from '../lib/api';
-import { supabase } from '../lib/supabase';
 import Navigation from '../components/layout/Navigation';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -21,7 +20,6 @@ import {
   XCircle,
   Loader2,
   Trash2,
-  RefreshCw,
 } from 'lucide-react';
 
 interface Client {
@@ -62,8 +60,6 @@ export default function Documents() {
   const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [filterClient, setFilterClient] = useState<string>('all'); // Filter for viewing documents
-  const [extractingMissing, setExtractingMissing] = useState<string | null>(null); // doc ID being extracted
-  const [reExtracting, setReExtracting] = useState<string | null>(null); // doc ID being re-extracted
 
   useEffect(() => {
     fetchClients();
@@ -242,48 +238,6 @@ export default function Documents() {
       setDocuments(documents.filter(d => d.id !== documentId));
     } catch (error: any) {
       alert(error.response?.data?.message || 'Failed to delete document');
-    }
-  }
-
-  async function handleExtractMissing(documentId: string) {
-    try {
-      setExtractingMissing(documentId);
-
-      const response = await apiClient.post(`/api/documents/${documentId}/extract-missing`);
-      const data = response.data;
-
-      if (data.missingMonths && data.missingMonths.length === 0) {
-        alert('All months already have transactions extracted!');
-      } else {
-        alert(data.message || 'Extracting missing months...');
-        // Refresh documents to show processing status
-        fetchDocuments();
-      }
-    } catch (error: any) {
-      alert(error.response?.data?.message || 'Failed to extract missing months');
-    } finally {
-      setExtractingMissing(null);
-    }
-  }
-
-  async function handleReExtract(documentId: string) {
-    if (!confirm('This will DELETE all existing transactions for this document and re-extract with improved accuracy. Continue?')) {
-      return;
-    }
-
-    try {
-      setReExtracting(documentId);
-
-      const response = await apiClient.post(`/api/documents/${documentId}/re-extract`);
-      const data = response.data;
-
-      alert(data.message || 'Re-extraction started. This may take a few minutes.');
-      // Refresh documents to show processing status
-      fetchDocuments();
-    } catch (error: any) {
-      alert(error.response?.data?.message || 'Failed to start re-extraction');
-    } finally {
-      setReExtracting(null);
     }
   }
 
@@ -522,40 +476,6 @@ export default function Documents() {
                           </span>
                         )}
                       </div>
-                      {/* Extract Missing Months - show for completed/error bank statement PDFs */}
-                      {(doc.status === 'complete' || doc.status === 'error') && doc.file_type === 'bank_statement' && (
-                        <>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleExtractMissing(doc.id)}
-                            disabled={extractingMissing === doc.id || reExtracting === doc.id}
-                            title="Extract missing months (only extracts months not yet in database)"
-                          >
-                            {extractingMissing === doc.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <RefreshCw className="h-4 w-4" />
-                            )}
-                            <span className="ml-1 text-xs">Extract Missing</span>
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleReExtract(doc.id)}
-                            disabled={reExtracting === doc.id || extractingMissing === doc.id}
-                            title="Delete all transactions and re-extract with improved accuracy"
-                            className="border-orange-300 text-orange-700 hover:bg-orange-50"
-                          >
-                            {reExtracting === doc.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <RefreshCw className="h-4 w-4" />
-                            )}
-                            <span className="ml-1 text-xs">Re-extract All</span>
-                          </Button>
-                        </>
-                      )}
                       <Button
                         variant="ghost"
                         size="sm"
