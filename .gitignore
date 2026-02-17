@@ -1,0 +1,290 @@
+# ============================================
+# AI ACCOUNTING - GIT IGNORE
+# ============================================
+# Files and directories to exclude from Git
+# CRITICAL: Prevents committing sensitive data
+# ============================================
+
+# --------------------------------------------
+# ENVIRONMENT VARIABLES (CRITICAL!)
+# --------------------------------------------
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.env.*.local
+
+# Backup env files (still sensitive!)
+*.env.backup
+.env.*.backup
+
+# --------------------------------------------
+# API KEYS & CREDENTIALS (CRITICAL!)
+# --------------------------------------------
+# Never commit these!
+credentials.txt
+secrets.json
+*.key
+*.pem
+*.p12
+*.pfx
+
+# --------------------------------------------
+# NODE MODULES
+# --------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# --------------------------------------------
+# BUILD OUTPUT
+# --------------------------------------------
+# Frontend (React)
+/frontend/build/
+/frontend/.cache/
+/frontend/dist/
+
+# Backend (Node.js)
+/backend/dist/
+/backend/build/
+
+# General
+*.log
+logs/
+*.pid
+*.seed
+*.pid.lock
+
+# --------------------------------------------
+# IDE / EDITOR
+# --------------------------------------------
+# VS Code
+.vscode/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Cursor
+.cursor/
+
+# JetBrains (WebStorm, IntelliJ)
+.idea/
+*.iml
+*.iws
+*.ipr
+.idea_modules/
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+
+# --------------------------------------------
+# OPERATING SYSTEM
+# --------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+.directory
+.Trash-*
+
+# --------------------------------------------
+# TESTING
+# --------------------------------------------
+coverage/
+*.lcov
+.nyc_output/
+.grunt/
+.lock-wscript
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
+
+# Vitest
+.vitest/
+
+# --------------------------------------------
+# DEPENDENCIES
+# --------------------------------------------
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+
+# --------------------------------------------
+# TEMPORARY FILES
+# --------------------------------------------
+*.tmp
+*.temp
+tmp/
+temp/
+.tmp/
+.cache/
+
+# --------------------------------------------
+# DATABASE
+# --------------------------------------------
+# Local database files
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Database backups
+*.sql
+*.dump
+backups/
+
+# --------------------------------------------
+# UPLOADS & USER DATA (Development)
+# --------------------------------------------
+# Don't commit user-uploaded files in development
+/uploads/
+/public/uploads/
+/backend/uploads/
+
+# --------------------------------------------
+# LOGS
+# --------------------------------------------
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Winston logs
+combined.log
+error.log
+exceptions.log
+rejections.log
+
+# --------------------------------------------
+# DEPLOYMENT
+# --------------------------------------------
+# Vercel
+.vercel
+
+# Railway
+.railway/
+
+# Docker
+docker-compose.override.yml
+
+# --------------------------------------------
+# DOCUMENTATION (Generated)
+# --------------------------------------------
+# Don't commit auto-generated docs
+/docs/api/
+/docs/coverage/
+
+# But DO commit our specification docs!
+# So we explicitly DON'T ignore:
+# !/docs/*.md
+
+# --------------------------------------------
+# MISC
+# --------------------------------------------
+*.bak
+*.swp
+*~
+
+# Next.js (if you add it later)
+.next/
+out/
+
+# Gatsby (if you add it later)
+.cache/
+public/
+
+# --------------------------------------------
+# SECURITY SCAN RESULTS
+# --------------------------------------------
+.snyk
+snyk-results.json
+
+# --------------------------------------------
+# AI / ML MODELS (if you download them)
+# --------------------------------------------
+*.h5
+*.pkl
+*.pt
+*.pth
+models/
+
+# --------------------------------------------
+# CREDENTIALS REMINDER
+# --------------------------------------------
+# If you see any of these files, DON'T COMMIT:
+# - Any file with "key" in the name
+# - Any file with "secret" in the name
+# - Any file with "password" in the name
+# - Any file with "credential" in the name
+# - Any .env file
+# - Any API keys
+# ============================================
+
+# --------------------------------------------
+# NOTES:
+# --------------------------------------------
+# This .gitignore is comprehensive and protects:
+# 1. Sensitive credentials (.env files, keys)
+# 2. Generated files (build output, node_modules)
+# 3. IDE/Editor files (.vscode, .idea)
+# 4. OS files (.DS_Store, Thumbs.db)
+# 5. Logs and temporary files
+#
+# What IS committed:
+# ✅ Source code (*.ts, *.tsx, *.js, *.jsx)
+# ✅ Configuration templates (*.example)
+# ✅ Documentation (*.md)
+# ✅ Package manifests (package.json)
+# ✅ Git configuration (.gitignore, .gitattributes)
+#
+# Always double-check before committing:
+# git status
+# git diff
+# ============================================
