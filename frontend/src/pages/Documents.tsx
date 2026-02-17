@@ -237,7 +237,7 @@ export default function Documents() {
       await apiClient.delete(`/api/documents/${documentId}`);
       setDocuments(documents.filter(d => d.id !== documentId));
     } catch (error: any) {
-      alert(error.response?.data?.message || 'Failed to delete document');
+      alert(error.response?.data?.error || error.response?.data?.message || 'Failed to delete document');
     }
   }
 

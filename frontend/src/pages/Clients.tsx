@@ -44,7 +44,7 @@ export default function Clients() {
       const response = await apiClient.get('/api/clients');
       setClients(response.data.clients);
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to load clients');
+      setError(err.response?.data?.error || err.response?.data?.message || 'Failed to load clients');
       console.error('Failed to fetch clients:', err);
     } finally {
       setLoading(false);
@@ -94,7 +94,7 @@ export default function Clients() {
       }
       setIsDialogOpen(false);
     } catch (err: any) {
-      setFormError(err.response?.data?.message || 'Failed to save client');
+      setFormError(err.response?.data?.error || err.response?.data?.message || 'Failed to save client');
       console.error('Failed to save client:', err);
     } finally {
       setSubmitting(false);
@@ -110,7 +110,7 @@ export default function Clients() {
       await apiClient.delete(`/api/clients/${client.id}`);
       setClients(clients.filter(c => c.id !== client.id));
     } catch (err: any) {
-      alert(err.response?.data?.message || 'Failed to delete client');
+      alert(err.response?.data?.error || err.response?.data?.message || 'Failed to delete client');
       console.error('Failed to delete client:', err);
     }
   }

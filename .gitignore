@@ -172,10 +172,12 @@ temp/
 *.db-shm
 *.db-wal
 
-# Database backups
-*.sql
+# Database backups (but NOT schema files)
 *.dump
 backups/
+# Exclude dump files but allow schema files
+*_backup.sql
+*_dump.sql
 
 # --------------------------------------------
 # UPLOADS & USER DATA (Development)
