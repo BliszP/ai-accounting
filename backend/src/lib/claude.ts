@@ -267,80 +267,27 @@ function applyBalanceCorrections(
 }
 
 /**
- * Deduplicate extracted transactions.
- * Removes exact duplicates (same date + amount + normalized merchant)
- * and cross-month boundary duplicates (same amount + merchant, 1-2 days apart crossing month boundary).
+ * Remove only transactions that are EXACT SAME-CALL duplicates —
+ * i.e. the LLM returned the same transaction object more than once in a
+ * single API response (a model bug, not a financial reality).
+ *
+ * Key includes row position (index) so two genuinely identical transactions
+ * on the same day (e.g. two Tesco shops for £45.00) are NOT collapsed.
+ *
+ * We intentionally do NOT deduplicate across months or across API calls
+ * because bank statements are authoritative: every row is a unique transaction.
+ * The month-by-month prompts have strict date ranges, making cross-call
+ * duplicates impossible in the text pipeline and extremely unlikely in the
+ * Sonnet PDF pipeline.
  */
 function deduplicateTransactions(transactions: ExtractedTransaction[]): {
   deduplicated: ExtractedTransaction[];
   removedCount: number;
   removedDetails: string[];
 } {
-  const removedDetails: string[] = [];
-
-  // Step 1: Remove exact same-day duplicates (same date + amount + normalized merchant)
-  const uniqueMap = new Map<string, ExtractedTransaction>();
-  for (const txn of transactions) {
-    const normMerchant = txn.merchant.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 20);
-    const key = `${txn.date}|${txn.amount.toFixed(2)}|${txn.type}|${normMerchant}`;
-
-    if (uniqueMap.has(key)) {
-      removedDetails.push(`Same-day dup: ${txn.date} | £${txn.amount.toFixed(2)} | ${txn.merchant}`);
-    } else {
-      uniqueMap.set(key, txn);
-    }
-  }
-
-  let result = [...uniqueMap.values()];
-
-  // Step 2: Remove cross-month boundary duplicates
-  // (same merchant + amount, 1-2 days apart, crossing a month boundary)
-  result.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  const toRemove = new Set<number>();
-
-  for (let i = 0; i < result.length; i++) {
-    if (toRemove.has(i)) continue;
-
-    for (let j = i + 1; j < result.length; j++) {
-      if (toRemove.has(j)) continue;
-
-      const t1 = result[i];
-      const t2 = result[j];
-
-      const d1 = new Date(t1.date);
-      const d2 = new Date(t2.date);
-      const dayDiff = (d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24);
-
-      // Only check transactions within 2 days of each other
-      if (dayDiff > 2) break;
-      if (dayDiff < 1) continue;
-
-      // Must cross a month boundary
-      const month1 = t1.date.substring(0, 7);
-      const month2 = t2.date.substring(0, 7);
-      if (month1 === month2) continue;
-
-      // Same amount and similar merchant
-      if (Math.abs(t1.amount - t2.amount) < 0.01 && t1.type === t2.type) {
-        const m1 = t1.merchant.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 15);
-        const m2 = t2.merchant.toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 15);
-
-        if (m1 === m2) {
-          toRemove.add(j); // Remove the later one
-          removedDetails.push(`Cross-month dup: ${t1.date} & ${t2.date} | £${t1.amount.toFixed(2)} | ${t1.merchant}`);
-        }
-      }
-    }
-  }
-
-  const deduplicated = result.filter((_, idx) => !toRemove.has(idx));
-  const removedCount = transactions.length - deduplicated.length;
-
-  if (removedCount > 0) {
-    logger.info(`Deduplication removed ${removedCount} transactions`, { removedDetails });
-  }
-
-  return { deduplicated, removedCount, removedDetails };
+  // No deduplication across pipelines — return as-is.
+  // This function is retained so call sites don't need changing.
+  return { deduplicated: transactions, removedCount: 0, removedDetails: [] };
 }
 
 /**
@@ -476,29 +423,78 @@ function repairTruncatedJson(text: string): string {
  * Parse transactions from Claude response text with robust error handling
  */
 function parseTransactionsFromResponse(responseText: string): ExtractedTransaction[] {
+  let rawTxns: any[] = [];
+
   // Try standard JSON parse first
   const jsonMatch = responseText.match(/\{[\s\S]*\}/);
   if (jsonMatch) {
     try {
       const result = JSON.parse(jsonMatch[0]);
-      return result.transactions || [];
+      rawTxns = result.transactions || [];
     } catch (_) {
       // Try repair
       logger.warn('JSON parse failed, attempting repair...');
+      try {
+        const repaired = repairTruncatedJson(responseText);
+        const result = JSON.parse(repaired);
+        rawTxns = result.transactions || [];
+        logger.info(`JSON repair successful, recovered ${rawTxns.length} transactions`);
+      } catch (e: any) {
+        logger.error('JSON repair also failed', { error: e.message, responsePreview: responseText.substring(0, 500) });
+        return [];
+      }
     }
   }
 
-  // Try repairing truncated JSON
-  try {
-    const repaired = repairTruncatedJson(responseText);
-    const result = JSON.parse(repaired);
-    const txns = result.transactions || [];
-    logger.info(`JSON repair successful, recovered ${txns.length} transactions`);
-    return txns;
-  } catch (e: any) {
-    logger.error('JSON repair also failed', { error: e.message, responsePreview: responseText.substring(0, 500) });
-    return [];
-  }
+  // Normalize each transaction to ensure financial data integrity
+  return rawTxns.map((t: any): ExtractedTransaction => {
+    // Parse amount — always store as a positive number
+    let amount = parseFloat(t.amount);
+    if (isNaN(amount)) amount = 0;
+
+    let type: 'debit' | 'credit' = (t.type === 'credit') ? 'credit' : 'debit';
+
+    // If the model returned a negative amount, it's a debit regardless of stated type.
+    // This handles CSVs where Amount column is negative for outgoings.
+    if (amount < 0) {
+      amount = Math.abs(amount);
+      type = 'debit';
+    }
+
+    // Parse balance — must be a number or null
+    let balance: number | null = null;
+    if (t.balance !== null && t.balance !== undefined && t.balance !== '') {
+      const parsed = parseFloat(t.balance);
+      if (!isNaN(parsed)) balance = parsed;
+    }
+
+    const rawDate: string = t.date || '';
+
+    // Merchant: use dedicated merchant field, fall back to description, never null
+    const merchant: string = (t.merchant && String(t.merchant).trim()) || 'Unknown';
+    // Description: only include if it's different from merchant (avoids exact duplication)
+    const desc: string | null = (t.description && String(t.description).trim() && t.description !== t.merchant)
+      ? String(t.description).trim()
+      : null;
+
+    return {
+      date: rawDate,
+      merchant,
+      description: desc,
+      amount,
+      type,
+      category: t.category || null,
+      categoryConfidence: t.categoryConfidence != null ? parseFloat(t.categoryConfidence) || null : null,
+      vatAmount: t.vatAmount != null ? parseFloat(t.vatAmount) || null : null,
+      vatRate: t.vatRate != null ? parseFloat(t.vatRate) || null : null,
+      extractionConfidence: t.extractionConfidence != null ? parseFloat(t.extractionConfidence) || 0.8 : 0.8,
+      balance,
+    };
+  }).filter(t =>
+    t.amount > 0      // no zero-value rows
+    && t.date         // must have a date
+    && /^\d{4}-\d{2}-\d{2}$/.test(t.date) // must be valid ISO date
+  );
 }
 
 /**
@@ -591,42 +587,47 @@ function buildMonthExtractionPrompt(
   index: number,
   totalMonths: number
 ): string {
-  return `You are extracting bank statement transactions for professional accounting software. ACCURACY IS CRITICAL - every transaction and every penny must be captured correctly.
+  return `You are extracting bank statement transactions for professional accounting software. Every penny must be correct.
 
-TASK: Extract EVERY SINGLE transaction from this bank statement for the period ${month.startDate} to ${month.endDate} (${month.label}).
+TASK: Extract EVERY individual transaction from this bank statement PDF for ${month.startDate} to ${month.endDate} (${month.label}).
 
-RULES:
-1. Extract EVERY transaction row visible on the statement for this date range. Do NOT skip any rows.
-2. Amounts must be EXACTLY as shown on the statement - do not round, estimate, or modify any values.
-3. Type classification:
-   - "debit" = money OUT (payments, purchases, direct debits, standing orders, transfers out, card payments)
-   - "credit" = money IN (deposits, income, transfers in, refunds, interest)
-4. Go through the statement page by page, line by line. Count as you go to ensure none are missed.
-5. If a transaction description spans multiple lines on the statement, combine them into one transaction.
-6. For EACH transaction, include the RUNNING BALANCE shown on the statement after that transaction. Bank statements show a balance column on each row - extract the exact balance figure.
-7. Extract the OPENING BALANCE for this period (the balance shown before the first transaction in this date range).
+═══ AMOUNT AND TYPE RULES ═══
+- Amount with "-" sign (e.g. -£45.99) → type="debit", amount=45.99
+- Amount with "+" sign or no sign (e.g. +£123.45 or £123.45 in a credit column) → type="credit", amount=123.45
+- "Debit", "DR", "Payment", "Purchase", "Direct Debit", "Standing Order" keywords → type="debit"
+- "Credit", "CR", "Deposit", "Transfer In", "Refund" keywords → type="credit"
+- Always output amount as a POSITIVE number.
 
-For each transaction provide: date (YYYY-MM-DD), merchant (exactly as shown on statement), description (additional details or null), amount (positive number exactly as on statement), type ("debit"/"credit"), balance (running balance after this transaction as shown on statement, or null if not visible), category (from: "Office Supplies","Travel","Meals & Entertainment","Professional Fees","Utilities","Rent","Salaries","Marketing","Software","Other", or null), categoryConfidence (0-1), vatAmount (or null), vatRate (or null), extractionConfidence (0-1).
+═══ DO NOT EXTRACT THESE AS TRANSACTIONS ═══
+- "Opening Balance" / "Balance Brought Forward" lines
+- "Closing Balance" / "Balance Carried Forward" lines
+- "Total Credits", "Total Debits", "Total Money In", "Total Money Out" summary lines
+- Page headers, account number lines, statement date range lines
 
-After extracting ALL transactions for ${month.startDate} to ${month.endDate}, you MUST verify your work:
-- Count the total number of transactions you extracted
-- Sum all debit amounts separately
-- Sum all credit amounts separately
-- Note the closing balance (balance after the last transaction)
+═══ FIELD EXTRACTION ═══
+- date: YYYY-MM-DD (convert DD/MM/YYYY, DD Mon YYYY, etc.)
+- merchant: payee name exactly as printed on the statement
+- description: reference/additional notes on the same row (null if same as merchant or empty)
+- amount: POSITIVE, exact to the penny as shown
+- type: "debit" or "credit"
+- balance: running balance on the SAME ROW as this transaction (exact figure, or null)
+- openingBalance: balance figure shown BEFORE the first transaction in this date range
 
-Return ONLY this JSON structure:
+Go through every page, every line. If a description wraps to a second line, merge it — do not create two transactions for one row.
+
+Return ONLY valid JSON (no markdown):
 {
   "openingBalance": 5167.17,
   "transactions": [
     {
       "date": "YYYY-MM-DD",
-      "merchant": "Name exactly as shown",
-      "description": "Details or null",
-      "amount": 123.45,
+      "merchant": "TESCO SUPERSTORE",
+      "description": "CARD PAYMENT",
+      "amount": 45.99,
       "type": "debit",
-      "balance": 5043.72,
-      "category": "Category or null",
-      "categoryConfidence": 0.85,
+      "balance": 5121.18,
+      "category": "Travel",
+      "categoryConfidence": 0.7,
       "vatAmount": null,
       "vatRate": null,
       "extractionConfidence": 0.95
@@ -636,15 +637,12 @@ Return ONLY this JSON structure:
     "transactionCount": 85,
     "totalDebits": "1234.56",
     "totalCredits": "5678.90",
-    "closingBalance": 5206.95,
+    "closingBalance": 5121.18,
     "monthLabel": "${month.label}"
   }
 }
 
-CRITICAL: This is month ${index + 1} of ${totalMonths}. Only include transactions dated ${month.startDate} to ${month.endDate}.
-Do NOT skip any transactions. Missing even one transaction makes the entire extraction useless for accounting.
-BALANCE FIELD: Every row on a bank statement shows the running balance. Extract this EXACT figure for each transaction. If not visible for a row, set balance to null.
-Return ONLY valid JSON. No markdown. No explanation.`;
+Month ${index + 1} of ${totalMonths}. Only transactions dated ${month.startDate} to ${month.endDate}. Do NOT skip any row.`;
 }
 
 /**
@@ -705,18 +703,23 @@ async function extractMonthWithVerification(
         try {
           parsed = JSON.parse(jsonMatch[0]);
         } catch (_) {
-          const repaired = repairTruncatedJson(text);
-          parsed = JSON.parse(repaired);
+          try {
+            const repaired = repairTruncatedJson(text);
+            parsed = JSON.parse(repaired);
+          } catch (_2) {
+            logger.warn(`${month.label}: Could not parse JSON response`);
+          }
         }
       }
 
-      const transactions = (parsed.transactions || []).map((t: any) => ({
-        ...t,
-        balance: t.balance ?? null,
-      })) as ExtractedTransaction[];
+      // Use parseTransactionsFromResponse for consistent amount normalisation
+      // (ensures positive amounts, correct debit/credit type, valid balances)
+      const transactions = parseTransactionsFromResponse(
+        JSON.stringify({ transactions: parsed.transactions || [] })
+      );
       const verification = parsed.verification || null;
-      const openingBalance = parsed.openingBalance ?? null;
-      const closingBalance = verification?.closingBalance ?? null;
+      const openingBalance = parsed.openingBalance != null ? parseFloat(parsed.openingBalance) : null;
+      const closingBalance = verification?.closingBalance != null ? parseFloat(verification.closingBalance) : null;
 
       logger.info(`${month.label}: ${transactions.length} transactions extracted`, {
         verification,
@@ -781,35 +784,61 @@ function buildTextExtractionPrompt(
   index: number,
   totalMonths: number
 ): string {
-  return `You are extracting bank statement transactions for professional accounting software. ACCURACY IS CRITICAL.
+  return `You are extracting bank statement transactions for professional accounting software. Every penny must be correct.
 
-TASK: Extract EVERY transaction from the following bank statement text for the period ${month.startDate} to ${month.endDate} (${month.label}).
+TASK: Extract EVERY individual transaction from the bank statement text below for ${month.startDate} to ${month.endDate} (${month.label}).
 
-RULES:
-1. Extract EVERY transaction row. Do NOT skip any.
-2. Amounts must be EXACTLY as shown - do not round or estimate.
-3. Type: "debit" = money OUT, "credit" = money IN.
-4. Multi-line descriptions: combine into one transaction.
-5. Include the RUNNING BALANCE shown after each transaction (if visible in the text).
-6. Include the OPENING BALANCE (balance before first transaction).
+═══ AMOUNT AND TYPE RULES (follow in strict priority order) ═══
 
-For each transaction: date (YYYY-MM-DD), merchant (exactly as shown), description (or null), amount (positive number), type ("debit"/"credit"), balance (running balance or null), category (from: "Office Supplies","Travel","Meals & Entertainment","Professional Fees","Utilities","Rent","Salaries","Marketing","Software","Other", or null), categoryConfidence (0-1), vatAmount (or null), vatRate (or null), extractionConfidence (0-1).
+A. If statement has separate "Money Out" and "Money In" columns (CSV format):
+   - "Money Out" value present → type="debit", amount=that value (positive)
+   - "Money In" value present  → type="credit", amount=that value (positive)
 
-After extracting, verify: count transactions, sum debits, sum credits.
+B. If statement has a single Amount column or amounts with +/- signs (PDF format):
+   - Amount starts with "-" or "−" (e.g. -45.99, −45.99) → type="debit", amount=45.99
+   - Amount starts with "+" or no sign  (e.g. +123.45, 123.45) → type="credit", amount=123.45
+   - EXCEPTION: if the line is clearly labeled as a debit/payment, force type="debit"
 
-Return ONLY valid JSON:
+C. Always output amount as a POSITIVE number regardless of the sign in the source.
+
+═══ DO NOT EXTRACT THESE AS TRANSACTIONS ═══
+- "Opening Balance", "Closing Balance", "Balance Brought Forward" lines
+- "Total Money In", "Total Money Out", "Total Outgoings", "Total Deposits" summary lines
+- Page headers, account number lines, statement period lines
+- Running balance figures on their own lines (balance is a field ON a transaction row)
+
+═══ FIELD EXTRACTION ═══
+- date: YYYY-MM-DD (convert any format: DD/MM/YYYY, DD Mon YYYY, etc.)
+- merchant: payee/merchant name exactly as shown on statement
+- description: additional reference/notes on same transaction (or null if same as merchant)
+- amount: POSITIVE number, exact to the penny
+- type: "debit" (money OUT) or "credit" (money IN)
+- balance: running account balance SHOWN ON THE SAME ROW as the transaction (or null if not shown)
+- category: one of "Office Supplies","Travel","Meals & Entertainment","Professional Fees","Utilities","Rent","Salaries","Marketing","Software","Other" (or null)
+- categoryConfidence: 0.0–1.0
+- vatAmount: VAT amount if shown (or null)
+- vatRate: 0.20 / 0.05 / 0.00 (or null)
+- extractionConfidence: 0.0–1.0
+
+═══ MULTI-LINE DESCRIPTIONS ═══
+If a transaction description wraps to a second line, merge it into one transaction. Do not create a separate entry for continuation lines.
+
+═══ DATE RANGE ═══
+Only include transactions dated ${month.startDate} to ${month.endDate} inclusive. Ignore any rows outside this range.
+
+Return ONLY valid JSON (no markdown, no explanation):
 {
   "openingBalance": 5167.17,
   "transactions": [
     {
       "date": "YYYY-MM-DD",
-      "merchant": "Name",
-      "description": "Details or null",
-      "amount": 123.45,
+      "merchant": "TESCO SUPERSTORE",
+      "description": "CARD PAYMENT",
+      "amount": 45.99,
       "type": "debit",
-      "balance": 5043.72,
-      "category": "Category or null",
-      "categoryConfidence": 0.85,
+      "balance": 5121.18,
+      "category": "Travel",
+      "categoryConfidence": 0.7,
       "vatAmount": null,
       "vatRate": null,
       "extractionConfidence": 0.95
@@ -819,13 +848,12 @@ Return ONLY valid JSON:
     "transactionCount": 85,
     "totalDebits": "1234.56",
     "totalCredits": "5678.90",
-    "closingBalance": 5206.95,
+    "closingBalance": 5121.18,
     "monthLabel": "${month.label}"
   }
 }
 
-CRITICAL: Month ${index + 1} of ${totalMonths}. Only transactions dated ${month.startDate} to ${month.endDate}.
-Return ONLY valid JSON. No markdown.`;
+This is month ${index + 1} of ${totalMonths}. Do NOT skip any transaction rows. Every row with a date and amount is a transaction.`;
 }
 
 /**
@@ -847,13 +875,24 @@ async function extractMonthFromText(
   const prompt = buildTextExtractionPrompt(month, index, totalMonths);
   const fullPrompt = `${prompt}\n\n--- BANK STATEMENT TEXT ---\n${textChunk}\n--- END ---`;
 
+  // If the chunk is large (likely many transactions), use Sonnet to avoid Haiku 8K output cap.
+  // Threshold: ~12K chars ≈ ~3K input tokens ≈ month with 80+ transactions in PDF format.
+  const useSonnet = textChunk.length > 12000;
+  const modelToUse = useSonnet
+    ? (env.CLAUDE_MODEL_SONNET || 'claude-sonnet-4-20250514')
+    : (env.CLAUDE_MODEL_HAIKU || 'claude-haiku-3-5-20241022');
+
+  if (useSonnet) {
+    logger.info(`[TEXT] ${month.label}: large chunk (${textChunk.length} chars) — upgrading to Sonnet for accuracy`);
+  }
+
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      logger.info(`[TEXT] Extracting ${month.label} (${index + 1}/${totalMonths}), attempt ${attempt}, using Haiku`);
+      logger.info(`[TEXT] Extracting ${month.label} (${index + 1}/${totalMonths}), attempt ${attempt}, using ${useSonnet ? 'Sonnet' : 'Haiku'}`);
       const callStart = Date.now();
 
       const msg = await anthropic.messages.create({
-        model: env.CLAUDE_MODEL_HAIKU || 'claude-haiku-3-5-20241022',
+        model: modelToUse,
         max_tokens: 16000,
         messages: [{
           role: 'user',
@@ -871,7 +910,7 @@ async function extractMonthFromText(
         responseLength: text.length,
         stopReason: msg.stop_reason,
         duration: `${duration}s`,
-        model: 'haiku',
+        model: useSonnet ? 'sonnet' : 'haiku',
       });
 
       if (msg.stop_reason === 'max_tokens') {
@@ -890,13 +929,13 @@ async function extractMonthFromText(
         }
       }
 
-      const transactions = (parsed.transactions || []).map((t: any) => ({
-        ...t,
-        balance: t.balance ?? null,
-      })) as ExtractedTransaction[];
+      // Use parseTransactionsFromResponse for consistent normalisation
+      const transactions = parseTransactionsFromResponse(
+        JSON.stringify({ transactions: parsed.transactions || [] })
+      );
       const verification = parsed.verification || null;
-      const openingBalance = parsed.openingBalance ?? null;
-      const closingBalance = verification?.closingBalance ?? null;
+      const openingBalance = parsed.openingBalance != null ? parseFloat(parsed.openingBalance) : null;
+      const closingBalance = verification?.closingBalance != null ? parseFloat(verification.closingBalance) : null;
 
       logger.info(`[TEXT] ${month.label}: ${transactions.length} transactions extracted`, {
         verification,
@@ -906,8 +945,8 @@ async function extractMonthFromText(
       // Balance chain verification (zero API cost)
       const balanceVerification = verifyBalanceChain(
         transactions,
-        openingBalance,
-        closingBalance,
+        isNaN(openingBalance as number) ? null : openingBalance,
+        isNaN(closingBalance as number) ? null : closingBalance,
         month.label
       );
 
@@ -936,7 +975,7 @@ async function extractMonthFromText(
     } catch (err: any) {
       const isRateLimit = err?.status === 429 || err?.error?.type === 'rate_limit_error';
       if (isRateLimit && attempt < retries) {
-        const waitTime = attempt * 15; // Shorter waits for Haiku (higher rate limits)
+        const waitTime = useSonnet ? attempt * 30 : attempt * 15;
         logger.warn(`[TEXT] Rate limit hit for ${month.label}, waiting ${waitTime}s...`);
         await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
       } else {
@@ -948,8 +987,236 @@ async function extractMonthFromText(
 }
 
 /**
+ * Single-pass text extraction using Haiku (for CSVs and short text documents).
+ * Sends the full text in one call — no month-splitting needed for small files.
+ */
+async function extractBankStatementTextSinglePass(
+  text: string,
+  startTime: number
+): Promise<ExtractionResult> {
+  const prompt = `You are extracting bank statement transactions for professional accounting software. ACCURACY IS CRITICAL.
+
+TASK: Extract EVERY SINGLE transaction from this bank statement data.
+
+RULES:
+1. Extract EVERY transaction row. Do NOT skip any rows.
+2. Amounts must be EXACTLY as shown - do not round or estimate.
+3. Type: "debit" = money OUT (payments, purchases, card payments, direct debits). "credit" = money IN (deposits, income, refunds, transfers in).
+4. For CSV data: if Amount is negative (e.g. -12.99) that is a DEBIT. If positive, it is a CREDIT (unless context says otherwise).
+5. Date format: output as YYYY-MM-DD.
+6. Include balance if visible in the data, otherwise null.
+7. Use the Description or merchant name column as the "merchant" field.
+
+For each transaction: date (YYYY-MM-DD), merchant (payee/merchant name), description (additional details or null), amount (positive number), type ("debit"/"credit"), balance (or null), category (from: "Office Supplies","Travel","Meals & Entertainment","Professional Fees","Utilities","Rent","Salaries","Marketing","Software","Other", or null), categoryConfidence (0-1), vatAmount (or null), vatRate (or null), extractionConfidence (0-1).
+
+Return ONLY valid JSON:
+{
+  "openingBalance": null,
+  "transactions": [{"date":"YYYY-MM-DD","merchant":"Name","description":null,"amount":12.99,"type":"debit","balance":null,"category":null,"categoryConfidence":null,"vatAmount":null,"vatRate":null,"extractionConfidence":0.95}],
+  "verification": {"transactionCount": 77, "totalDebits": "1234.56", "totalCredits": "567.89", "closingBalance": null}
+}
+No markdown. No explanation.`;
+
+  logger.info('[TEXT SINGLE-PASS] Sending to Haiku', {
+    textLength: text.length,
+    estimatedTokens: Math.ceil(text.length / 4),
+  });
+
+  const msg = await anthropic.messages.create({
+    model: env.CLAUDE_MODEL_HAIKU || 'claude-haiku-3-5-20241022',
+    max_tokens: 16000,
+    messages: [{
+      role: 'user',
+      content: [{ type: 'text', text: `${prompt}\n\n--- BANK STATEMENT DATA ---\n${text}\n--- END ---` }],
+    }],
+  });
+
+  const responseText = msg.content
+    .filter((b) => b.type === 'text')
+    .map((b) => 'text' in b ? b.text : '')
+    .join('');
+
+  if (msg.stop_reason === 'max_tokens') {
+    logger.warn('[TEXT SINGLE-PASS] Response truncated - some transactions may be missing');
+  }
+
+  const transactions = parseTransactionsFromResponse(responseText);
+  const processingTime = Date.now() - startTime;
+
+  logger.info('[TEXT SINGLE-PASS] Haiku extraction complete', {
+    transactionCount: transactions.length,
+    processingTime,
+    model: 'haiku',
+  });
+
+  return {
+    success: transactions.length > 0,
+    transactions,
+    error: transactions.length === 0 ? 'No transactions extracted' : undefined,
+    metadata: {
+      documentType: 'bank_statement',
+      totalTransactions: transactions.length,
+      processingTime,
+      pipeline: 'text-haiku-single-pass',
+    } as any,
+  };
+}
+
+/**
+ * Extract CSV-formatted bank statement text by splitting into row-based chunks.
+ * Used for large CSVs where month-splitting fails due to date format issues.
+ * Splits into batches of ~60 rows so each batch fits in Haiku's output limit.
+ */
+async function extractCSVByRowChunks(text: string, startTime: number): Promise<ExtractionResult> {
+  const ROWS_PER_CHUNK = 60;
+
+  // Separate header section (before first "Row N:") from data rows
+  const lines = text.split('\n');
+  const headerLines: string[] = [];
+  const allDataLines: string[] = [];
+  let inData = false;
+
+  for (const line of lines) {
+    if (!inData && /^Row \d+:/.test(line.trim())) {
+      inData = true;
+    }
+    if (inData) {
+      allDataLines.push(line);
+    } else {
+      headerLines.push(line);
+    }
+  }
+
+  // Keep only actual transaction rows (Row N: ...) — strip summary/footer lines
+  const dataLines = allDataLines.filter(line => /^Row \d+:/.test(line.trim()));
+
+  const header = headerLines.join('\n');
+  const totalChunks = Math.ceil(dataLines.length / ROWS_PER_CHUNK);
+
+  logger.info('[CSV CHUNKS] Splitting CSV into row-based chunks', {
+    totalRows: dataLines.length,
+    rowsPerChunk: ROWS_PER_CHUNK,
+    totalChunks,
+  });
+
+  const allTransactions: ExtractedTransaction[] = [];
+
+  for (let i = 0; i < dataLines.length; i += ROWS_PER_CHUNK) {
+    const chunkNum = Math.floor(i / ROWS_PER_CHUNK) + 1;
+    const chunkRows = dataLines.slice(i, i + ROWS_PER_CHUNK);
+    const expectedRows = chunkRows.length;
+    const chunkText = header + '\n' + chunkRows.join('\n');
+
+    if (chunkNum > 1) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    logger.info(`[CSV CHUNKS] Extracting chunk ${chunkNum}/${totalChunks}`, {
+      rows: expectedRows,
+      chars: chunkText.length,
+    });
+
+    // Build a chunk-specific prompt that tells the model the exact row count
+    const csvPrompt = `You are extracting bank statement transactions for professional accounting software. ACCURACY IS CRITICAL.
+
+TASK: This CSV data contains exactly ${expectedRows} rows (Row lines). You MUST extract exactly ${expectedRows} transactions — one per row, no skipping.
+
+AMOUNT AND TYPE RULES (in priority order):
+1. If "Money Out" column has a value → type="debit", amount=that value (already positive).
+2. If "Money In" column has a value → type="credit", amount=that value (already positive).
+3. If neither: use "Amount" column. Negative Amount → type="debit", amount=abs(value). Positive → type="credit".
+4. Amount is ALWAYS output as a POSITIVE number.
+
+DATE: Input may be DD/MM/YYYY (e.g. 15/01/2026 → output 2026-01-15) or YYYY-MM-DD.
+MERCHANT: Use "Name" column. DESCRIPTION: Use "Notes and #tags" or "Description" column (or null).
+INCLUDE ALL ROW TYPES: card_payment, pot_transfer, faster_payment, direct_debit, etc.
+BALANCE: null (not available in CSV).
+
+Return ONLY valid JSON with exactly ${expectedRows} transactions:
+{"openingBalance":null,"transactions":[{"date":"YYYY-MM-DD","merchant":"Name","description":null,"amount":12.99,"type":"debit","balance":null,"category":null,"categoryConfidence":null,"vatAmount":null,"vatRate":null,"extractionConfidence":0.95}],"verification":{"transactionCount":${expectedRows},"totalDebits":"0.00","totalCredits":"0.00","closingBalance":null}}
+No markdown. No explanation.`;
+
+    let transactions: ExtractedTransaction[] = [];
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const msg = await anthropic.messages.create({
+          model: env.CLAUDE_MODEL_HAIKU || 'claude-haiku-3-5-20241022',
+          max_tokens: 8000,
+          messages: [{
+            role: 'user',
+            content: [{ type: 'text', text: `${csvPrompt}\n\n--- CSV DATA (${expectedRows} rows) ---\n${chunkText}\n--- END ---` }],
+          }],
+        });
+
+        const responseText = msg.content
+          .filter((b) => b.type === 'text')
+          .map((b) => 'text' in b ? b.text : '')
+          .join('');
+
+        if (msg.stop_reason === 'max_tokens') {
+          logger.warn(`[CSV CHUNKS] Chunk ${chunkNum} response truncated`);
+        }
+
+        transactions = parseTransactionsFromResponse(responseText);
+
+        // If significantly under-extracted, retry once
+        if (transactions.length < expectedRows - 5 && attempt < 2) {
+          logger.warn(`[CSV CHUNKS] Chunk ${chunkNum} under-extracted (${transactions.length}/${expectedRows}), retrying...`);
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          continue;
+        }
+        break;
+      } catch (err: any) {
+        logger.error(`[CSV CHUNKS] Chunk ${chunkNum} attempt ${attempt} failed`, { error: err.message });
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+    }
+
+    allTransactions.push(...transactions);
+    logger.info(`[CSV CHUNKS] Chunk ${chunkNum}: extracted ${transactions.length}/${expectedRows} transactions`);
+  }
+
+  // IMPORTANT: Do NOT call deduplicateTransactions for CSV source data.
+  // - Each CSV row has a unique Transaction ID (source is already deduplicated)
+  // - Chunks are non-overlapping → no cross-chunk duplicates are possible
+  // - Same merchant/amount/day transactions ARE legitimate (e.g., 4 vending machine uses)
+  const processingTime = Date.now() - startTime;
+
+  logger.info('[CSV CHUNKS] Complete', {
+    totalChunks,
+    totalTransactions: allTransactions.length,
+    expectedTotal: dataLines.length,
+    missingRows: dataLines.length - allTransactions.length,
+    processingTime: `${(processingTime / 1000).toFixed(1)}s`,
+  });
+
+  return {
+    success: allTransactions.length > 0,
+    transactions: allTransactions,
+    error: allTransactions.length === 0 ? 'No transactions extracted from CSV chunks' : undefined,
+    metadata: {
+      documentType: 'bank_statement',
+      totalTransactions: allTransactions.length,
+      processingTime,
+      pipeline: 'csv-row-chunks-haiku',
+    } as any,
+  };
+}
+
+/**
  * Optimized text-based extraction pipeline for bank statements.
  * Uses local PDF text extraction + Haiku = ~99% cheaper than sending PDF to Sonnet.
+ *
+ * Pipeline selection logic:
+ *  - CSV text (any size)         → row-chunk Haiku (no date-format assumptions)
+ *  - Very short text (< 20K)     → single-pass Haiku (fits in one output window)
+ *  - Multi-month text            → month-by-month Haiku (avoids 8K token output cap)
+ *  - Single-month / no date range detected → single-pass Haiku
+ *
+ * The previous threshold was 100K chars for single-pass, which caused ALL
+ * multi-month PDFs (typically 40-80K chars extracted) to be sent to a single
+ * Haiku call, hitting the ~8192 output-token cap and silently truncating months.
  */
 async function extractBankStatementOptimized(
   extractedText: string,
@@ -959,26 +1226,76 @@ async function extractBankStatementOptimized(
   try {
     logger.info('=== USING OPTIMIZED TEXT-BASED PIPELINE (Haiku) ===');
 
+    // Detect CSV/Excel formatted text (produced by fileParser.ts)
+    const isCSVText = extractedText.trimStart().startsWith('=== BANK STATEMENT DATA');
+
+    // CSV: always use row-based chunking (robust — no date-format assumptions needed)
+    if (isCSVText) {
+      logger.info('CSV text detected, using row-based chunking pipeline', {
+        textLength: extractedText.length,
+      });
+      return await extractCSVByRowChunks(extractedText, startTime);
+    }
+
+    // Very short text (single page / < 20K chars): safe for single-pass
+    const SINGLE_PASS_CHAR_LIMIT = 20000; // ~5K tokens — guaranteed to fit in one response
+    if (extractedText.length < SINGLE_PASS_CHAR_LIMIT) {
+      logger.info('Short text document, using single-pass Haiku extraction', {
+        textLength: extractedText.length,
+        estimatedTokens: Math.ceil(extractedText.length / 4),
+      });
+      return await extractBankStatementTextSinglePass(extractedText, startTime);
+    }
+
     // Step 1: Detect date range from text (zero API calls)
     let dateRange = detectDateRangeFromText(extractedText);
 
     if (!dateRange) {
-      // Fallback to LLM date detection (1 Sonnet call)
-      logger.info('Regex date detection failed, falling back to LLM detection');
-      dateRange = await detectStatementDateRange(base64Content);
+      // Only call LLM date detection if base64Content is actually PDF base64
+      // (not plain text). For CSVs, base64Content === extractedText (both plain text).
+      const isPdfBase64 = base64Content !== extractedText;
+      if (isPdfBase64) {
+        logger.info('Regex date detection failed, falling back to LLM detection');
+        dateRange = await detectStatementDateRange(base64Content);
+      }
     }
 
     if (!dateRange) {
-      logger.warn('Could not detect date range, falling back to Sonnet PDF pipeline');
-      return await extractLargeBankStatementByMonth(base64Content, startTime);
+      // No date range detected at all — use single-pass with a warning
+      logger.warn('Could not detect date range — using single-pass Haiku. Multi-month statements may be truncated.', {
+        textLength: extractedText.length,
+      });
+      return await extractBankStatementTextSinglePass(extractedText, startTime);
     }
 
-    logger.info('Statement period detected', { ...dateRange, method: dateRange ? 'regex' : 'llm' });
-
-    // Step 2: Build monthly ranges (same logic as before, zero API calls)
-    const months: { startDate: string; endDate: string; label: string }[] = [];
+    // Determine how many calendar months the statement spans
     const periodStart = new Date(dateRange.startDate);
-    const periodEnd = new Date(dateRange.endDate);
+    const periodEnd   = new Date(dateRange.endDate);
+    const monthSpan   =
+      (periodEnd.getFullYear() - periodStart.getFullYear()) * 12 +
+      (periodEnd.getMonth() - periodStart.getMonth()) + 1;
+
+    // Single-month statements: safe for single-pass even if text is large
+    if (monthSpan <= 1) {
+      logger.info('Single-month statement, using single-pass Haiku extraction', {
+        dateRange,
+        textLength: extractedText.length,
+      });
+      return await extractBankStatementTextSinglePass(extractedText, startTime);
+    }
+
+    // Multi-month statement: ALWAYS use month-by-month splitting.
+    // PDFs use Sonnet+PDF so Claude can see the visual column layout (Money In / Money Out).
+    // CSVs use Haiku+text (column structure preserved in text form).
+    logger.info(`Multi-month statement (${monthSpan} months) — using month-by-month pipeline`, {
+      dateRange,
+      textLength: extractedText.length,
+    });
+
+    logger.info('Statement period detected', { ...dateRange });
+
+    // Step 2: Build monthly ranges (reuse periodStart/periodEnd from above)
+    const months: { startDate: string; endDate: string; label: string }[] = [];
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
       'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -1008,45 +1325,72 @@ async function extractBankStatementOptimized(
     // Step 3: Split text into monthly chunks (zero API calls)
     const textChunks = splitTextByMonth(extractedText, months);
 
-    // Step 4: Extract each month using Haiku (text only, ~3K tokens per call)
+    // Safety check: if ALL chunks are empty, month-splitter failed (unrecognised date format).
+    // Fall back to single-pass Haiku (better than nothing; user will see truncation warning).
+    const nonEmptyChunks = months.filter(m => (textChunks.get(m.label) || '').trim().length > 0);
+    if (nonEmptyChunks.length === 0) {
+      logger.warn('Month-splitting produced all empty chunks — transaction date format not recognised in extracted text. Falling back to single-pass Haiku.', {
+        months: months.map(m => m.label),
+        hint: 'PDF may use an unusual date format or the text extraction did not preserve line structure.',
+      });
+      return await extractBankStatementTextSinglePass(extractedText, startTime);
+    }
+
+    const emptyMonths = months.filter(m => !(textChunks.get(m.label) || '').trim());
+    if (emptyMonths.length > 0) {
+      logger.warn(`${emptyMonths.length} month(s) produced no text lines. These months will be attempted via Sonnet PDF fallback.`, {
+        emptyMonths: emptyMonths.map(m => m.label),
+        filledMonths: nonEmptyChunks.map(m => m.label),
+        hint: 'Transactions in these months may use a date format not recognised by the text splitter.',
+      });
+    }
+
+    // Step 4: Extract each month.
+    // PDFs: use Sonnet + PDF document so Claude can SEE the actual column layout
+    //       (Money In vs Money Out columns). Plain-text extraction loses column
+    //       structure and causes wrong debit/credit classification.
+    // CSV/text: use Haiku + extracted text (column structure preserved in text).
+    const isPdfBase64 = base64Content !== extractedText;
+
     const allTransactions: ExtractedTransaction[] = [];
     const allBalanceVerifications: BalanceVerificationResult[] = [];
     const allCorrections: Array<{ month: string; index: number; date: string; merchant: string; originalAmount: number; correctedAmount: number; reason: string }> = [];
+    const monthResults: Array<{ label: string; count: number; status: 'ok' | 'failed' }> = [];
 
     for (let i = 0; i < months.length; i++) {
       const month = months[i];
-      const chunk = textChunks.get(month.label) || '';
 
       if (i > 0) {
-        // Short delay for Haiku (much higher rate limits than Sonnet)
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
-
-      if (!chunk.trim()) {
-        logger.warn(`No text found for ${month.label}, skipping`);
-        continue;
+        await new Promise(resolve => setTimeout(resolve, isPdfBase64 ? 5000 : 2000));
       }
 
       try {
-        const result = await extractMonthFromText(chunk, month, i, months.length);
-        allTransactions.push(...result.transactions);
-
-        if (result.balanceVerification) {
-          allBalanceVerifications.push(result.balanceVerification);
-        }
-        if (result.corrections.length > 0) {
-          allCorrections.push(...result.corrections.map(c => ({ ...c, month: month.label })));
+        if (isPdfBase64) {
+          // PDF: send the actual PDF to Sonnet so column layout (Money In / Money Out) is visible
+          logger.info(`[PDF] Extracting ${month.label} via Sonnet+PDF (${i + 1}/${months.length})`);
+          const result = await extractMonthWithVerification(base64Content, month, i, months.length);
+          allTransactions.push(...result.transactions);
+          monthResults.push({ label: month.label, count: result.transactions.length, status: 'ok' });
+          if (result.balanceVerification) allBalanceVerifications.push(result.balanceVerification);
+          if (result.corrections.length > 0) allCorrections.push(...result.corrections.map(c => ({ ...c, month: month.label })));
+        } else {
+          // CSV / pre-parsed text: Haiku is sufficient; column structure is preserved in text
+          const chunk = textChunks.get(month.label) || '';
+          if (!chunk.trim()) {
+            logger.error(`[CSV] ${month.label}: no text chunk — month MISSING`);
+            monthResults.push({ label: month.label, count: 0, status: 'failed' });
+            continue;
+          }
+          logger.info(`[CSV] Extracting ${month.label} via Haiku+text (${i + 1}/${months.length})`);
+          const result = await extractMonthFromText(chunk, month, i, months.length);
+          allTransactions.push(...result.transactions);
+          monthResults.push({ label: month.label, count: result.transactions.length, status: 'ok' });
+          if (result.balanceVerification) allBalanceVerifications.push(result.balanceVerification);
+          if (result.corrections.length > 0) allCorrections.push(...result.corrections.map(c => ({ ...c, month: month.label })));
         }
       } catch (error) {
-        logger.error(`[TEXT] Failed to extract ${month.label}, trying Sonnet fallback`, { error });
-        // Fallback: try with Sonnet PDF pipeline for this month
-        try {
-          const fallbackResult = await extractMonthWithVerification(base64Content, month, i, months.length);
-          allTransactions.push(...fallbackResult.transactions);
-          logger.info(`[TEXT] Sonnet fallback succeeded for ${month.label}: ${fallbackResult.transactions.length} txns`);
-        } catch (fallbackErr) {
-          logger.error(`[TEXT] Sonnet fallback also failed for ${month.label}`, { error: fallbackErr });
-        }
+        logger.error(`[PIPELINE] Failed to extract ${month.label}`, { error });
+        monthResults.push({ label: month.label, count: 0, status: 'failed' });
       }
     }
 
@@ -1073,25 +1417,35 @@ async function extractBankStatementOptimized(
 
     const processingTime = Date.now() - startTime;
 
-    logger.info('=== TEXT PIPELINE COMPLETE ===', {
+    const failedMonths = monthResults.filter(r => r.status === 'failed');
+
+    logger.info('=== EXTRACTION PIPELINE COMPLETE ===', {
+      pipeline: isPdfBase64 ? 'PDF-Sonnet-month-by-month' : 'CSV-Haiku-month-by-month',
       monthsProcessed: months.length,
+      monthResults: monthResults.map(r => `${r.label}: ${r.count} txns [${r.status}]`),
       rawCount: allTransactions.length,
       afterDedup: deduplicated.length,
-      duplicatesRemoved: removedCount,
       processingTime: `${(processingTime / 1000).toFixed(1)}s`,
-      apiCalls: `${months.length} Haiku calls (text only)`,
+      ...(failedMonths.length > 0 && {
+        WARNING: `${failedMonths.length} month(s) FAILED: ${failedMonths.map(r => r.label).join(', ')}`,
+      }),
     });
+
+    const hasFailedMonths = failedMonths.length > 0;
 
     return {
       success: deduplicated.length > 0,
       transactions: deduplicated,
-      error: deduplicated.length === 0 ? 'No transactions extracted' : undefined,
+      error: hasFailedMonths
+        ? `Extraction incomplete: ${failedMonths.map(r => r.label).join(', ')} could not be extracted. Other months were processed successfully.`
+        : (deduplicated.length === 0 ? 'No transactions extracted' : undefined),
       metadata: {
         documentType: 'bank_statement',
         totalTransactions: deduplicated.length,
         processingTime,
-        pipeline: 'text-haiku',
-        duplicatesRemoved: removedCount,
+        pipeline: isPdfBase64 ? 'pdf-sonnet' : 'csv-haiku',
+        monthResults: monthResults,
+        failedMonths: failedMonths.map(r => r.label),
         balanceVerification: allBalanceVerifications.length > 0 ? {
           totalTransactions: deduplicated.length,
           transactionsWithBalance: deduplicated.filter(t => t.balance !== null).length,
@@ -1103,8 +1457,13 @@ async function extractBankStatementOptimized(
       } as any,
     };
   } catch (error) {
-    logger.error('Text pipeline failed, falling back to Sonnet PDF pipeline', { error });
-    return await extractLargeBankStatementByMonth(base64Content, startTime);
+    const isPdfBase64 = base64Content !== extractedText;
+    if (isPdfBase64) {
+      logger.error('Text pipeline failed, falling back to Sonnet PDF pipeline', { error });
+      return await extractLargeBankStatementByMonth(base64Content, startTime);
+    }
+    logger.error('Text pipeline failed for non-PDF content, using single-pass Haiku', { error });
+    return await extractBankStatementTextSinglePass(extractedText, startTime);
   }
 }
 
@@ -1163,15 +1522,11 @@ async function extractLargeBankStatementByMonth(
   const allBalanceVerifications: BalanceVerificationResult[] = [];
   const allCorrections: Array<{ month: string; index: number; date: string; merchant: string; originalAmount: number; correctedAmount: number; reason: string }> = [];
 
-  logger.info('Waiting 5s before extraction to avoid rate limits...');
-  await new Promise(resolve => setTimeout(resolve, 5000));
-
   for (let i = 0; i < months.length; i++) {
     const month = months[i];
 
     if (i > 0) {
-      logger.info('Waiting 10s between months to avoid rate limits...');
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      await new Promise(resolve => setTimeout(resolve, 5000));
     }
 
     const result = await extractMonthWithVerification(fileContent, month, i, months.length);

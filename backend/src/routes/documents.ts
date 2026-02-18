@@ -318,6 +318,63 @@ documents.delete('/:id', async (c) => {
 });
 
 /**
+ * POST /api/documents/:id/re-extract
+ * Re-process an existing document (deletes old transactions, runs extraction again).
+ */
+documents.post('/:id/re-extract', async (c) => {
+  try {
+    const user = c.get('user');
+    const documentId = c.req.param('id');
+
+    // Verify document belongs to user's organization
+    const { data: document, error: fetchError } = await supabaseAdmin
+      .from('documents')
+      .select(`
+        *,
+        clients!inner(
+          id,
+          organization_id
+        )
+      `)
+      .eq('id', documentId)
+      .eq('clients.organization_id', user.organizationId)
+      .single();
+
+    if (fetchError || !document) {
+      throw errors.notFound('Document not found');
+    }
+
+    // Reset status to queued so the processor picks it up fresh
+    const { error: updateError } = await supabaseAdmin
+      .from('documents')
+      .update({
+        status: 'queued',
+        error_message: null,
+        processed_at: null,
+      })
+      .eq('id', documentId);
+
+    if (updateError) {
+      logger.error('Failed to reset document status for re-extract:', updateError);
+      throw errors.internal('Failed to queue document for re-extraction');
+    }
+
+    logger.info(`Document queued for re-extraction: ${documentId}`);
+
+    // Trigger processing (documentProcessor will delete old transactions before inserting new ones)
+    processDocument(documentId).catch(error => {
+      logger.error('Re-extraction failed', { documentId, error });
+    });
+
+    return c.json({ message: 'Re-extraction started. Old transactions will be replaced.' });
+  } catch (error) {
+    if (error instanceof APIError) throw error;
+    logger.error('Error in POST /api/documents/:id/re-extract:', error);
+    throw error;
+  }
+});
+
+/**
  * GET /api/documents/stats
  * Get document statistics for the organization
  */

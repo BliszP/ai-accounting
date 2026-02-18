@@ -138,7 +138,7 @@ export function detectDateRangeFromText(text: string): DateRange | null {
 
     // Pattern group 2: Look for two dates near period-related keywords
     // Search for dates near "statement", "period", "from" keywords
-    const datePattern = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}|\d{1,2}\s+(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+\d{4})/gi;
+    const datePattern = /(\d{4}-\d{2}-\d{2}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}|\d{1,2}\s+(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\s+\d{4})/gi;
 
     const allDates: string[] = [];
     let dateMatch;
@@ -173,14 +173,38 @@ export function detectDateRangeFromText(text: string): DateRange | null {
 }
 
 /**
- * Extract a date from the beginning of a text line.
+ * Extract a date from a text line.
+ * Handles dates at the start of a line (PDF bank statements) and
+ * mid-line date fields (CSV parsed format: "... | Date: 2026-01-15 | ...").
  * Returns YYYY-MM-DD or null.
  */
 function extractDateFromLine(line: string): string | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
 
-  // Common bank statement line formats:
+  // CSV parsed format: "Row N: ... | Date: <value> | ..."
+  // Check this first because CSV rows start with "Row N:" which won't match
+  // any start-of-line date pattern.
+
+  // ISO format: Date: 2026-01-15 (also matches Date: 2026-01-15T09:44:56Z)
+  const csvISOMatch = trimmed.match(/\bDate:\s*(\d{4}-\d{2}-\d{2})/);
+  if (csvISOMatch) {
+    return csvISOMatch[1];
+  }
+
+  // UK format: Date: 15/01/2026 or Date: 15-01-2026 (day first, as used by Monzo UK)
+  const csvDMYMatch = trimmed.match(/\bDate:\s*(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (csvDMYMatch) {
+    const day = parseInt(csvDMYMatch[1], 10);
+    const month = parseInt(csvDMYMatch[2], 10);
+    const year = parseInt(csvDMYMatch[3], 10);
+    // UK banks use DD/MM/YYYY (day first)
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
+
+  // Common PDF bank statement line formats (dates at start of line):
   // "01 Sep 2023  TESCO STORES  DEB  45.50  5121.67"
   // "01/09/2023  TESCO STORES  45.50  5121.67"
   // "2023-09-01  TESCO STORES  45.50"
@@ -207,7 +231,7 @@ function extractDateFromLine(line: string): string | null {
     }
   }
 
-  // Try YYYY-MM-DD at start
+  // Try YYYY-MM-DD at start of line
   match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (match) {
     return match[0];

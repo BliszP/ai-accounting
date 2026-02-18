@@ -103,6 +103,9 @@ export async function processDocument(documentId: string): Promise<void> {
         .eq('document_id', existingDoc.id);
 
       if (!txnFetchError && existingTxns && existingTxns.length > 0) {
+        // Clear any previously inserted transactions for this document first
+        await supabase.from('transactions').delete().eq('document_id', documentId);
+
         const copiedTxns = existingTxns.map((txn: any) => ({
           organization_id: document.organization_id,
           client_id: document.client_id,
@@ -247,6 +250,17 @@ export async function processDocument(documentId: string): Promise<void> {
       extraction_confidence: txn.extractionConfidence,
     }));
 
+    // Delete any previously extracted transactions for this document before inserting new ones.
+    // This ensures re-processing always replaces data cleanly (never accumulates duplicates).
+    const { error: deleteError } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('document_id', documentId);
+
+    if (deleteError) {
+      throw new Error(`Failed to clear existing transactions: ${deleteError.message}`);
+    }
+
     if (transactionsToInsert.length > 0) {
       const { error: insertError } = await supabase
         .from('transactions')
@@ -257,18 +271,33 @@ export async function processDocument(documentId: string): Promise<void> {
       }
     }
 
-    // Update document status to complete
+    // Determine final status — 'complete' even if some months failed,
+    // so the user can see what was extracted. The error message records what's missing.
+    const extractionMeta = (extractionResult.metadata as any) || {};
+    const failedMonths: string[] = extractionMeta.failedMonths || [];
+    const finalStatus = 'complete'; // Always complete so partial results are accessible
+
     await supabase
       .from('documents')
       .update({
-        status: 'complete',
+        status: finalStatus,
         processed_at: new Date().toISOString(),
+        error_message: failedMonths.length > 0
+          ? `Partial extraction: ${failedMonths.join(', ')} could not be processed. All other months extracted successfully.`
+          : null,
+        metadata: {
+          ...extractionMeta,
+          transactionCount: transactionsToInsert.length,
+          completedAt: new Date().toISOString(),
+        },
       })
       .eq('id', documentId);
 
     logger.info('Document processing complete', {
       documentId,
       transactionCount: transactionsToInsert.length,
+      failedMonths: failedMonths.length > 0 ? failedMonths : undefined,
+      monthResults: extractionMeta.monthResults,
     });
   } catch (error) {
     logger.error('Document processing failed', { documentId, error });

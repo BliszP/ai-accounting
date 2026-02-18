@@ -157,7 +157,7 @@ transactions.put('/:id', async (c) => {
       updateData.status = validated.status;
       if (validated.status === 'approved') {
         updateData.approved_at = new Date().toISOString();
-        updateData.approved_by = user.userId;
+        // approved_by skipped: FK constraint points to public.users but auth uses auth.users
       }
     }
 
@@ -278,7 +278,7 @@ transactions.post('/bulk-approve', async (c) => {
     const updateData: any = {
       status: 'approved',
       approved_at: new Date().toISOString(),
-      approved_by: user.userId,
+      // approved_by skipped: FK constraint points to public.users but auth uses auth.users
       updated_at: new Date().toISOString(),
     };
 

@@ -2,8 +2,17 @@
 -- AI ACCOUNTING DATABASE SCHEMA
 -- Complete script for Supabase SQL Editor
 -- ========================================
--- Version: 1.0
--- Date: February 8, 2026
+-- Version: 1.1
+-- Date: February 18, 2026
+--
+-- Changes in v1.1:
+--   - Enable RLS on organizations (security fix)
+--   - Enable RLS on chart_of_accounts + account_category_mappings
+--   - Add SET search_path = public to all functions (security fix)
+--   - Add is_org_admin() security-definer helper function
+--   - All RLS policies use (SELECT current_setting(...)) pattern for
+--     per-query evaluation instead of per-row (performance fix)
+--   - Add composite index idx_users_org_role
 --
 -- Instructions:
 -- 1. Open Supabase → SQL Editor
@@ -229,6 +238,8 @@ CREATE INDEX idx_organizations_status ON organizations(status);
 -- Users
 CREATE INDEX idx_users_organization_id ON users(organization_id);
 CREATE INDEX idx_users_email ON users(email);
+-- Composite index for is_org_admin() lookup: WHERE id=? AND role=? AND org_id=?
+CREATE INDEX idx_users_org_role ON users(organization_id, role);
 
 -- Clients
 CREATE INDEX idx_clients_organization_id ON clients(organization_id);
@@ -289,24 +300,59 @@ CREATE INDEX idx_exports_created_at ON exports(created_at DESC);
 
 -- ========================================
 -- ROW LEVEL SECURITY (RLS) POLICIES
+--
+-- Performance note: current_setting() is wrapped in (SELECT ...)
+-- so PostgreSQL evaluates it once per query (InitPlan), not once
+-- per row. This eliminates the most common RLS performance warning.
+--
+-- Service role (used by the backend via supabaseAdmin) always
+-- bypasses RLS automatically — no explicit policy needed for it.
 -- ========================================
+
+-- Organizations
+ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users see own organization"
+  ON organizations FOR SELECT
+  USING (id = (SELECT current_setting('app.current_organization_id', true)::uuid));
 
 -- Users
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users can view own organization"
   ON users FOR SELECT
-  USING (organization_id = current_setting('app.current_organization_id', true)::uuid);
+  USING (
+    organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+  );
+
+-- Admin helper: security-definer so it can query users without
+-- triggering the RLS policy on users (avoids self-referencing subquery).
+-- STABLE lets PostgreSQL cache the result once per query.
+CREATE OR REPLACE FUNCTION public.is_org_admin()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.users
+    WHERE id              = (SELECT current_setting('app.current_user_id', true)::uuid)
+      AND role            = 'admin'
+      AND organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+  );
+$$;
 
 CREATE POLICY "Admins can manage users"
   ON users FOR ALL
   USING (
-    EXISTS (
-      SELECT 1 FROM users u
-      WHERE u.id = current_setting('app.current_user_id', true)::uuid
-      AND u.role = 'admin'
-      AND u.organization_id = users.organization_id
-    )
+    organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+    AND (SELECT public.is_org_admin())
+  )
+  WITH CHECK (
+    organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+    AND (SELECT public.is_org_admin())
   );
 
 -- Clients
@@ -314,64 +360,107 @@ ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users see own organization clients"
   ON clients FOR SELECT
-  USING (organization_id = current_setting('app.current_organization_id', true)::uuid);
+  USING (
+    organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+  );
 
 -- Documents
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users see own organization documents"
   ON documents FOR SELECT
-  USING (organization_id = current_setting('app.current_organization_id', true)::uuid);
+  USING (
+    organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+  );
 
 -- Transactions
 ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users see own organization transactions"
   ON transactions FOR SELECT
-  USING (organization_id = current_setting('app.current_organization_id', true)::uuid);
+  USING (
+    organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+  );
 
 -- Journal Entries
 ALTER TABLE journal_entries ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users see own organization journal entries"
   ON journal_entries FOR SELECT
-  USING (organization_id = current_setting('app.current_organization_id', true)::uuid);
+  USING (
+    organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+  );
 
 -- Learning Rules
 ALTER TABLE learning_rules ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users see own organization rules"
   ON learning_rules FOR SELECT
-  USING (organization_id = current_setting('app.current_organization_id', true)::uuid);
+  USING (
+    organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+  );
 
 -- Exports
 ALTER TABLE exports ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users see own organization exports"
   ON exports FOR SELECT
-  USING (organization_id = current_setting('app.current_organization_id', true)::uuid);
+  USING (
+    organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+  );
+
+-- Chart of Accounts
+ALTER TABLE chart_of_accounts ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users see own organization accounts"
+  ON chart_of_accounts FOR SELECT
+  USING (
+    organization_id IS NULL  -- global/shared accounts visible to all
+    OR organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+  );
+
+-- Account Category Mappings
+ALTER TABLE account_category_mappings ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users see own organization mappings"
+  ON account_category_mappings FOR SELECT
+  USING (
+    organization_id IS NULL
+    OR organization_id = (SELECT current_setting('app.current_organization_id', true)::uuid)
+  );
 
 -- ========================================
 -- DATABASE FUNCTIONS
+--
+-- Security note: SET search_path = public prevents schema-injection
+-- attacks where a malicious user creates objects in a search_path
+-- schema to intercept function calls.
 -- ========================================
 
 -- Function: normalize_merchant()
 -- Normalizes merchant name for comparison
-CREATE OR REPLACE FUNCTION normalize_merchant(merchant_text TEXT)
-RETURNS TEXT AS $$
+CREATE OR REPLACE FUNCTION public.normalize_merchant(merchant_text TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = public
+AS $$
 BEGIN
   RETURN LOWER(TRIM(REGEXP_REPLACE(merchant_text, '[^a-zA-Z0-9\s]', '', 'g')));
 END;
-$$ LANGUAGE plpgsql IMMUTABLE;
+$$;
 
 -- Function: get_or_create_learning_rule()
 -- Gets existing learning rule or creates new one
-CREATE OR REPLACE FUNCTION get_or_create_learning_rule(
+CREATE OR REPLACE FUNCTION public.get_or_create_learning_rule(
   p_organization_id UUID,
   p_client_id UUID,
   p_merchant TEXT,
   p_category TEXT
-) RETURNS UUID AS $$
+) RETURNS UUID
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
 DECLARE
   v_rule_id UUID;
   v_merchant_normalized TEXT;
@@ -395,16 +484,16 @@ BEGIN
   ELSE
     -- Update existing rule
     UPDATE learning_rules
-    SET category = p_category,
-        usage_count = usage_count + 1,
+    SET category     = p_category,
+        usage_count  = usage_count + 1,
         last_used_at = NOW(),
-        updated_at = NOW()
+        updated_at   = NOW()
     WHERE id = v_rule_id;
   END IF;
 
   RETURN v_rule_id;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 -- ========================================
 -- VERIFICATION QUERIES
@@ -428,16 +517,27 @@ $$ LANGUAGE plpgsql;
 --                   'learning_rules', 'exports')
 -- ORDER BY tablename, indexname;
 
--- Check RLS policies were created (should return 7+ rows)
+-- Check RLS is enabled on all tables (rlsenabled should be true for all):
+-- SELECT relname, relrowsecurity AS rlsenabled
+-- FROM pg_class
+-- WHERE relname IN (
+--   'organizations','users','clients','documents','transactions',
+--   'journal_entries','learning_rules','exports',
+--   'chart_of_accounts','account_category_mappings'
+-- )
+-- ORDER BY relname;
+
+-- Check RLS policies were created (should return 11+ rows):
 -- SELECT tablename, policyname FROM pg_policies
 -- WHERE schemaname = 'public'
 -- ORDER BY tablename, policyname;
 
--- Check functions were created (should return 2 rows)
--- SELECT routine_name FROM information_schema.routines
--- WHERE routine_schema = 'public'
--- AND routine_name IN ('normalize_merchant', 'get_or_create_learning_rule')
--- ORDER BY routine_name;
+-- Check functions were created and have secure search_path (should return 3 rows):
+-- SELECT proname, proconfig
+-- FROM pg_proc
+-- WHERE proname IN ('normalize_merchant', 'get_or_create_learning_rule', 'is_org_admin')
+--   AND pronamespace = 'public'::regnamespace;
+-- Expected: proconfig includes 'search_path=public' for all three.
 
 -- ========================================
 -- SETUP COMPLETE!

@@ -75,6 +75,7 @@ export default function Transactions() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [expandedClients, setExpandedClients] = useState<Set<string>>(new Set());
   const [expandedDocuments, setExpandedDocuments] = useState<Set<string>>(new Set());
+  const [selectedDocument, setSelectedDocument] = useState<string>('all');
 
   // Edit transaction state
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
@@ -88,6 +89,7 @@ export default function Transactions() {
   useEffect(() => {
     fetchClients();
     fetchTransactions();
+    setSelectedDocument('all'); // reset document filter when client or status changes
   }, [selectedClient, selectedStatus]);
 
   useEffect(() => {
@@ -327,12 +329,19 @@ export default function Transactions() {
     return Array.from(monthSet.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([value, label]) => ({ value, label }));
   }
 
-  const filteredTransactions = selectedMonth === 'all'
-    ? transactions
-    : transactions.filter(txn => {
-        const d = new Date(txn.date);
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` === selectedMonth;
-      });
+  const filteredTransactions = transactions.filter(txn => {
+    if (selectedMonth !== 'all') {
+      const d = new Date(txn.date);
+      if (`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` !== selectedMonth) return false;
+    }
+    if (selectedDocument !== 'all' && txn.documents.id !== selectedDocument) return false;
+    return true;
+  });
+
+  // Build document list from current transactions (respects client + status filter already applied by fetch)
+  const availableDocuments = Array.from(
+    new Map(transactions.map(t => [t.documents.id, t.documents.file_name])).entries()
+  ).map(([id, file_name]) => ({ id, file_name }));
 
   /** Build 2-level hierarchy: client → documents → transactions */
   function groupByClientAndDocument() {
@@ -508,7 +517,7 @@ export default function Transactions() {
         <Card className="mb-6 border border-slate-200 shadow-md bg-white">
           <CardHeader><CardTitle>Filters</CardTitle></CardHeader>
           <CardContent>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-4 gap-4">
               <div>
                 <Label>Client</Label>
                 <Select value={selectedClient} onValueChange={setSelectedClient}>
@@ -516,6 +525,20 @@ export default function Transactions() {
                   <SelectContent>
                     <SelectItem value="all">All Clients</SelectItem>
                     {clients.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Document</Label>
+                <Select value={selectedDocument} onValueChange={setSelectedDocument}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Documents</SelectItem>
+                    {availableDocuments.map(d => (
+                      <SelectItem key={d.id} value={d.id}>
+                        {d.file_name.length > 35 ? d.file_name.substring(0, 35) + '…' : d.file_name}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

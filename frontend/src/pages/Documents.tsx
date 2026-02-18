@@ -20,6 +20,7 @@ import {
   XCircle,
   Loader2,
   Trash2,
+  RefreshCw,
 } from 'lucide-react';
 
 interface Client {
@@ -238,6 +239,18 @@ export default function Documents() {
       setDocuments(documents.filter(d => d.id !== documentId));
     } catch (error: any) {
       alert(error.response?.data?.error || error.response?.data?.message || 'Failed to delete document');
+    }
+  }
+
+  async function handleReExtract(documentId: string) {
+    try {
+      await apiClient.post(`/api/documents/${documentId}/re-extract`);
+      // Reset status in UI to show it's re-queued
+      setDocuments(documents.map(d =>
+        d.id === documentId ? { ...d, status: 'queued' } : d
+      ));
+    } catch (error: any) {
+      alert(error.response?.data?.error || error.response?.data?.message || 'Failed to start re-extraction');
     }
   }
 
@@ -476,6 +489,14 @@ export default function Documents() {
                           </span>
                         )}
                       </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Re-extract transactions (replaces existing data)"
+                        onClick={() => handleReExtract(doc.id)}
+                      >
+                        <RefreshCw className="h-4 w-4 text-blue-500" />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="sm"
