@@ -1369,8 +1369,15 @@ async function extractBankStatementOptimized(
           // PDF: send the actual PDF to Sonnet so column layout (Money In / Money Out) is visible
           logger.info(`[PDF] Extracting ${month.label} via Sonnet+PDF (${i + 1}/${months.length})`);
           const result = await extractMonthWithVerification(base64Content, month, i, months.length);
-          allTransactions.push(...result.transactions);
-          monthResults.push({ label: month.label, count: result.transactions.length, status: 'ok' });
+          // Hard-filter to only transactions within this month's date range.
+          // Claude sometimes includes adjacent-month transactions — filter them out server-side.
+          const inRange = result.transactions.filter(t => t.date >= month.startDate && t.date <= month.endDate);
+          const filtered = result.transactions.length - inRange.length;
+          if (filtered > 0) {
+            logger.warn(`[PDF] ${month.label}: filtered out ${filtered} out-of-range transactions (Claude bleed-through)`);
+          }
+          allTransactions.push(...inRange);
+          monthResults.push({ label: month.label, count: inRange.length, status: 'ok' });
           if (result.balanceVerification) allBalanceVerifications.push(result.balanceVerification);
           if (result.corrections.length > 0) allCorrections.push(...result.corrections.map(c => ({ ...c, month: month.label })));
         } else {
@@ -1383,8 +1390,14 @@ async function extractBankStatementOptimized(
           }
           logger.info(`[CSV] Extracting ${month.label} via Haiku+text (${i + 1}/${months.length})`);
           const result = await extractMonthFromText(chunk, month, i, months.length);
-          allTransactions.push(...result.transactions);
-          monthResults.push({ label: month.label, count: result.transactions.length, status: 'ok' });
+          // Filter CSV results to date range as well (safety net)
+          const inRange = result.transactions.filter(t => t.date >= month.startDate && t.date <= month.endDate);
+          const filtered = result.transactions.length - inRange.length;
+          if (filtered > 0) {
+            logger.warn(`[CSV] ${month.label}: filtered out ${filtered} out-of-range transactions`);
+          }
+          allTransactions.push(...inRange);
+          monthResults.push({ label: month.label, count: inRange.length, status: 'ok' });
           if (result.balanceVerification) allBalanceVerifications.push(result.balanceVerification);
           if (result.corrections.length > 0) allCorrections.push(...result.corrections.map(c => ({ ...c, month: month.label })));
         }
@@ -1530,7 +1543,13 @@ async function extractLargeBankStatementByMonth(
     }
 
     const result = await extractMonthWithVerification(fileContent, month, i, months.length);
-    allTransactions.push(...result.transactions);
+    // Hard-filter to only transactions within this month's date range
+    const inRange = result.transactions.filter(t => t.date >= month.startDate && t.date <= month.endDate);
+    const filtered = result.transactions.length - inRange.length;
+    if (filtered > 0) {
+      logger.warn(`[LARGE-PDF] ${month.label}: filtered out ${filtered} out-of-range transactions`);
+    }
+    allTransactions.push(...inRange);
 
     if (result.balanceVerification) {
       allBalanceVerifications.push(result.balanceVerification);
