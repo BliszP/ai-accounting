@@ -10,6 +10,7 @@ import { env } from '../config/environment.js';
 import { logger } from './logger.js';
 import { isLargeDocument, detectStatementDateRange } from './pdfProcessor.js';
 import { detectDateRangeFromText, splitTextByMonth } from './pdfTextExtractor.js';
+import { pdfToBase64Images } from './pdfImageExtractor.js';
 
 // Configure Decimal.js for financial precision
 Decimal.set({ precision: 20, rounding: Decimal.ROUND_HALF_UP });
@@ -2113,5 +2114,267 @@ export async function extractTransactions(
         transactions: [],
         error: `Unsupported document type: ${documentType}`,
       };
+  }
+}
+
+// ============================================================================
+// IMAGE-BASED PDF EXTRACTION PIPELINE (for multi-page bank statements)
+// ============================================================================
+
+const PAGE_EXTRACTION_PROMPT = `Extract ALL transactions from this bank statement page.
+
+Return ONLY a JSON array (no markdown, no explanation):
+[
+  {
+    "date": "YYYY-MM-DD",
+    "merchant": "exact merchant name",
+    "description": "reference/notes or null",
+    "debit": number or null,
+    "credit": number or null,
+    "balance": number or null,
+    "category": "category guess or null",
+    "categoryConfidence": 0.0-1.0 or null,
+    "extractionConfidence": 0.0-1.0
+  }
+]
+
+CRITICAL RULES:
+- Extract EVERY transaction row visible on this page
+- debit = money going OUT (negative amounts, payments, withdrawals)
+- credit = money coming IN (positive amounts, deposits, refunds)
+- Do NOT extract: opening balance, closing balance, summary lines, headers
+- If page has NO transactions (cover page, terms, etc), return []
+- Balance is the running balance shown on the SAME LINE as the transaction
+- Dates: convert to YYYY-MM-DD format`;
+
+/**
+ * Extract transactions from a single page image using Haiku vision (cheap, fast)
+ */
+async function extractPageWithHaiku(pageBase64: string, pageNum: number, totalPages: number): Promise<ExtractedTransaction[]> {
+  logger.info(`Extracting page ${pageNum}/${totalPages} with Haiku vision`);
+
+  try {
+    const response = await anthropic.messages.create({
+      model: env.CLAUDE_MODEL_HAIKU || 'claude-haiku-4-5-20251001',
+      max_tokens: 4096,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/jpeg',
+              data: pageBase64,
+            },
+          },
+          { type: 'text', text: PAGE_EXTRACTION_PROMPT }
+        ]
+      }]
+    });
+
+    const content = response.content[0];
+    if (content.type !== 'text') {
+      throw new Error('No text response from Haiku');
+    }
+
+    // Remove markdown code fences if present
+    const cleaned = content.text.replace(/```json\n?|\n?```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+
+    if (!Array.isArray(parsed)) {
+      throw new Error('Response is not an array');
+    }
+
+    // Convert to ExtractedTransaction format
+    const transactions: ExtractedTransaction[] = parsed.map((txn: any) => ({
+      date: txn.date,
+      merchant: txn.merchant || 'Unknown',
+      description: txn.description || null,
+      amount: txn.debit || txn.credit || 0,
+      type: txn.debit ? 'debit' : 'credit',
+      category: txn.category || null,
+      categoryConfidence: txn.categoryConfidence || null,
+      vatAmount: null,
+      vatRate: null,
+      extractionConfidence: txn.extractionConfidence || 0.85,
+      balance: txn.balance || null,
+    }));
+
+    logger.info(`Page ${pageNum}: ${transactions.length} transactions extracted (Haiku)`);
+    return transactions;
+  } catch (error) {
+    logger.error(`Haiku extraction failed for page ${pageNum}`, { error });
+    throw error;
+  }
+}
+
+/**
+ * Retry page extraction with Sonnet (more powerful, for complex pages)
+ */
+async function retryPageWithSonnet(pageBase64: string, pageNum: number, totalPages: number): Promise<ExtractedTransaction[]> {
+  logger.warn(`Retrying page ${pageNum}/${totalPages} with Sonnet (Haiku failed)`);
+
+  try {
+    const response = await anthropic.messages.create({
+      model: env.CLAUDE_MODEL_SONNET || 'claude-sonnet-4-20250514',
+      max_tokens: 8192,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/jpeg',
+              data: pageBase64,
+            },
+          },
+          {
+            type: 'text',
+            text: `Complex bank statement page. ${PAGE_EXTRACTION_PROMPT}`
+          }
+        ]
+      }]
+    });
+
+    const content = response.content[0];
+    if (content.type !== 'text') {
+      throw new Error('No text response from Sonnet');
+    }
+
+    const cleaned = content.text.replace(/```json\n?|\n?```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+
+    if (!Array.isArray(parsed)) {
+      throw new Error('Response is not an array');
+    }
+
+    const transactions: ExtractedTransaction[] = parsed.map((txn: any) => ({
+      date: txn.date,
+      merchant: txn.merchant || 'Unknown',
+      description: txn.description || null,
+      amount: txn.debit || txn.credit || 0,
+      type: txn.debit ? 'debit' : 'credit',
+      category: txn.category || null,
+      categoryConfidence: txn.categoryConfidence || null,
+      vatAmount: null,
+      vatRate: null,
+      extractionConfidence: txn.extractionConfidence || 0.9,
+      balance: txn.balance || null,
+    }));
+
+    logger.info(`Page ${pageNum}: ${transactions.length} transactions extracted (Sonnet fallback)`);
+    return transactions;
+  } catch (error) {
+    logger.error(`Sonnet extraction also failed for page ${pageNum}`, { error });
+    throw error;
+  }
+}
+
+/**
+ * Extract bank statement using image-based pipeline (bypasses text extraction issues)
+ */
+export async function extractBankStatementFromImages(pdfBuffer: Buffer, startTime: number): Promise<ExtractionResult> {
+  try {
+    logger.info('=== USING IMAGE-BASED EXTRACTION PIPELINE (Haiku Vision) ===');
+
+    // Step 1: Convert all PDF pages to images
+    const pageImages = await pdfToBase64Images(pdfBuffer);
+    logger.info(`PDF converted to ${pageImages.length} page images`);
+
+    // Step 2: Extract transactions from each page
+    const allTransactions: ExtractedTransaction[] = [];
+    const pageResults: { pageNum: number; count: number; model: 'haiku' | 'sonnet' | 'failed' }[] = [];
+
+    for (let i = 0; i < pageImages.length; i++) {
+      const pageNum = i + 1;
+
+      // Rate limiting: wait 2s between pages (Haiku has high rate limits)
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+
+      try {
+        // Try Haiku first (cheap + fast)
+        const transactions = await extractPageWithHaiku(pageImages[i], pageNum, pageImages.length);
+        allTransactions.push(...transactions);
+        pageResults.push({ pageNum, count: transactions.length, model: 'haiku' });
+      } catch (haikuError) {
+        // Haiku failed, retry with Sonnet
+        try {
+          await new Promise(resolve => setTimeout(resolve, 3000)); // Extra delay before Sonnet
+          const transactions = await retryPageWithSonnet(pageImages[i], pageNum, pageImages.length);
+          allTransactions.push(...transactions);
+          pageResults.push({ pageNum, count: transactions.length, model: 'sonnet' });
+        } catch (sonnetError) {
+          logger.error(`Both Haiku and Sonnet failed for page ${pageNum}, skipping`, { haikuError, sonnetError });
+          pageResults.push({ pageNum, count: 0, model: 'failed' });
+        }
+      }
+    }
+
+    // Sort by date
+    allTransactions.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    // Deduplication: remove exact duplicates (same date + merchant + amount)
+    const uniqueTransactions: ExtractedTransaction[] = [];
+    const seen = new Set<string>();
+
+    for (const txn of allTransactions) {
+      const key = `${txn.date}|${txn.merchant}|${txn.amount}|${txn.type}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueTransactions.push(txn);
+      }
+    }
+
+    const duplicatesRemoved = allTransactions.length - uniqueTransactions.length;
+    if (duplicatesRemoved > 0) {
+      logger.info(`Deduplication removed ${duplicatesRemoved} duplicate transactions`);
+    }
+
+    const processingTime = Date.now() - startTime;
+    const failedPages = pageResults.filter(p => p.model === 'failed').length;
+    const haikuPages = pageResults.filter(p => p.model === 'haiku').length;
+    const sonnetPages = pageResults.filter(p => p.model === 'sonnet').length;
+
+    logger.info('=== IMAGE-BASED EXTRACTION COMPLETE ===', {
+      totalPages: pageImages.length,
+      haikuPages,
+      sonnetPages,
+      failedPages,
+      rawTransactions: allTransactions.length,
+      afterDedup: uniqueTransactions.length,
+      duplicatesRemoved,
+      processingTime: `${(processingTime / 1000).toFixed(1)}s`,
+    });
+
+    return {
+      success: true,
+      transactions: uniqueTransactions,
+      metadata: {
+        documentType: 'bank_statement',
+        totalTransactions: uniqueTransactions.length,
+        processingTime,
+        pipeline: 'image-based-vision',
+        pageResults,
+        failedPages,
+      } as any,
+    };
+  } catch (error: any) {
+    const processingTime = Date.now() - startTime;
+    logger.error('Image-based extraction failed', { error: error.message || error, processingTime });
+
+    return {
+      success: false,
+      transactions: [],
+      error: error instanceof Error ? error.message : 'Image extraction failed',
+      metadata: {
+        documentType: 'bank_statement',
+        totalTransactions: 0,
+        processingTime,
+      },
+    };
   }
 }

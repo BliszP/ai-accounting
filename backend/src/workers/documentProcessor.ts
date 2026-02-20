@@ -8,7 +8,7 @@
 
 import { createHash } from 'crypto';
 import { supabaseAdmin } from '../lib/supabase.js';
-import { extractTransactions } from '../lib/claude.js';
+import { extractTransactions, extractBankStatementFromImages } from '../lib/claude.js';
 import { logger } from '../lib/logger.js';
 import { requiresPreParsing, parseFileToText } from '../lib/fileParser.js';
 import { extractTextFromPDF } from '../lib/pdfTextExtractor.js';
@@ -211,16 +211,25 @@ export async function processDocument(documentId: string): Promise<void> {
     }
 
     // --- EXTRACT TRANSACTIONS ---
-    // For text-based PDFs: pass extracted text so claude.ts can use optimized Haiku pipeline
-    // For image-based PDFs: pass base64 PDF (falls back to Sonnet pipeline)
-    const extractionResult = await extractTransactions(
-      contentForExtraction,
-      mimeTypeForExtraction,
-      document.file_type,
-      arrayBuffer.byteLength,
-      // Pass extracted text for text-based PDFs so Haiku pipeline can use it
-      (!isImageBased && extractedText && extractedText.length > 100) ? extractedText : undefined
-    );
+    let extractionResult;
+
+    // Use IMAGE-BASED PIPELINE for PDFs (bypasses broken text extraction)
+    if (document.mime_type === 'application/pdf') {
+      logger.info('Using IMAGE-BASED extraction pipeline for PDF', { documentId });
+      const startTime = Date.now();
+      extractionResult = await extractBankStatementFromImages(fileBuffer, startTime);
+    } else {
+      // For CSV/Excel/other formats: use normal text-based extraction
+      logger.info('Using TEXT-BASED extraction pipeline', { documentId, mimeType: document.mime_type });
+      extractionResult = await extractTransactions(
+        contentForExtraction,
+        mimeTypeForExtraction,
+        document.file_type,
+        arrayBuffer.byteLength,
+        // Pass extracted text for text-based docs
+        (extractedText && extractedText.length > 100) ? extractedText : undefined
+      );
+    }
 
     if (!extractionResult.success) {
       throw new Error(extractionResult.error || 'Extraction failed');

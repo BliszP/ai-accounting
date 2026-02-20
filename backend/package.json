@@ -19,6 +19,7 @@
     "@types/papaparse": "^5.5.2",
     "bcrypt": "^5.1.1",
     "bullmq": "^5.1.0",
+    "canvas": "^3.2.1",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "date-fns": "^3.3.1",
