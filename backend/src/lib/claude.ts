@@ -2121,31 +2121,27 @@ export async function extractTransactions(
 // IMAGE-BASED PDF EXTRACTION PIPELINE (for multi-page bank statements)
 // ============================================================================
 
-const PAGE_EXTRACTION_PROMPT = `Extract ALL transactions from this bank statement page.
+const PAGE_EXTRACTION_PROMPT = `Extract transactions from this bank statement page.
 
-Return ONLY a JSON array (no markdown, no explanation):
-[
-  {
-    "date": "YYYY-MM-DD",
-    "merchant": "exact merchant name",
-    "description": "reference/notes or null",
-    "debit": number or null,
-    "credit": number or null,
-    "balance": number or null,
-    "category": "category guess or null",
-    "categoryConfidence": 0.0-1.0 or null,
-    "extractionConfidence": 0.0-1.0
-  }
-]
+RESPONSE FORMAT (REQUIRED - NO EXCEPTIONS):
+Return ONLY a valid JSON array. Do NOT include explanations, markdown, or any text outside the JSON.
 
-CRITICAL RULES:
-- Extract EVERY transaction row visible on this page
-- debit = money going OUT (negative amounts, payments, withdrawals)
-- credit = money coming IN (positive amounts, deposits, refunds)
-- Do NOT extract: opening balance, closing balance, summary lines, headers
-- If page has NO transactions (cover page, terms, etc), return []
-- Balance is the running balance shown on the SAME LINE as the transaction
-- Dates: convert to YYYY-MM-DD format`;
+If the page has transactions, return them in this format:
+[{"date":"YYYY-MM-DD","merchant":"name","description":"ref or null","debit":null,"credit":123.45,"balance":500.00,"category":null,"categoryConfidence":null,"extractionConfidence":0.9}]
+
+If the page has NO transactions (cover page, index, terms, blank page), return:
+[]
+
+NEVER respond with text like "I don't see", "This page has", etc. ALWAYS return valid JSON.
+
+EXTRACTION RULES:
+- debit = money OUT (payments, withdrawals) - goes in "debit" field, "credit" is null
+- credit = money IN (deposits, refunds) - goes in "credit" field, "debit" is null
+- Do NOT extract: opening/closing balance lines, totals, headers
+- Balance = running balance on the SAME ROW as the transaction
+- Dates: convert to YYYY-MM-DD format
+
+Return ONLY the JSON array. No markdown code fences. No explanations.`;
 
 /**
  * Extract transactions from a single page image using Haiku vision (cheap, fast)
