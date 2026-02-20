@@ -2204,7 +2204,13 @@ async function extractPageWithHaiku(pageBase64: string, pageNum: number, totalPa
     logger.info(`Page ${pageNum}: ${transactions.length} transactions extracted (Haiku)`);
     return transactions;
   } catch (error) {
-    logger.error(`Haiku extraction failed for page ${pageNum}`, { error });
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    logger.error(`Haiku extraction failed for page ${pageNum}`, {
+      error: errorMsg,
+      stack: errorStack,
+      errorType: error?.constructor?.name
+    });
     throw error;
   }
 }
@@ -2267,7 +2273,13 @@ async function retryPageWithSonnet(pageBase64: string, pageNum: number, totalPag
     logger.info(`Page ${pageNum}: ${transactions.length} transactions extracted (Sonnet fallback)`);
     return transactions;
   } catch (error) {
-    logger.error(`Sonnet extraction also failed for page ${pageNum}`, { error });
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    logger.error(`Sonnet extraction also failed for page ${pageNum}`, {
+      error: errorMsg,
+      stack: errorStack,
+      errorType: error?.constructor?.name
+    });
     throw error;
   }
 }
@@ -2308,7 +2320,12 @@ export async function extractBankStatementFromImages(pdfBuffer: Buffer, startTim
           allTransactions.push(...transactions);
           pageResults.push({ pageNum, count: transactions.length, model: 'sonnet' });
         } catch (sonnetError) {
-          logger.error(`Both Haiku and Sonnet failed for page ${pageNum}, skipping`, { haikuError, sonnetError });
+          const haikuMsg = haikuError instanceof Error ? haikuError.message : String(haikuError);
+          const sonnetMsg = sonnetError instanceof Error ? sonnetError.message : String(sonnetError);
+          logger.error(`Both Haiku and Sonnet failed for page ${pageNum}, skipping`, {
+            haikuError: haikuMsg,
+            sonnetError: sonnetMsg
+          });
           pageResults.push({ pageNum, count: 0, model: 'failed' });
         }
       }
