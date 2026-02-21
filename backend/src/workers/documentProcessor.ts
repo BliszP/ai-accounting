@@ -56,7 +56,14 @@ export async function processDocument(documentId: string): Promise<void> {
       .download(document.storage_path);
 
     if (downloadError || !fileData) {
-      throw new Error(`Failed to download file: ${downloadError?.message}`);
+      logger.error('Storage download failed', {
+        documentId,
+        storagePath: document.storage_path,
+        bucket: 'documents',
+        error: downloadError?.message,
+        statusCode: (downloadError as any)?.statusCode,
+      });
+      throw new Error(`Failed to download file: ${downloadError?.message || 'No file data returned'}`);
     }
 
     // Convert file to buffer/base64
@@ -361,14 +368,17 @@ export async function processQueuedDocuments(): Promise<void> {
       try {
         await processDocument(doc.id);
       } catch (error) {
-        logger.error('Failed to process document', { documentId: doc.id, error });
+        const msg = error instanceof Error ? error.message : String(error);
+        const stack = error instanceof Error ? error.stack : undefined;
+        logger.error('Failed to process document', { documentId: doc.id, error: msg, stack });
         // Continue processing other documents
       }
     }
 
     logger.info('Finished processing queued documents');
   } catch (error) {
-    logger.error('Failed to process queued documents', { error });
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error('Failed to process queued documents', { error: msg });
     throw error;
   }
 }
