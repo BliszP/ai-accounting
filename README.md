@@ -651,7 +651,7 @@ Solution:
 
 ## 🎓 RELATED PROJECTS
 
-**WeldQAi** (Your previous project)
+**WeldQAi** 
 - Flutter/Firebase SaaS
 - Welding inspection digitization
 - Rapid prototyping approach
@@ -666,7 +666,6 @@ Solution:
 **Lessons Applied:**
 - WeldQAi: Build fast, iterate with customers
 - AI Accounting: Plan thoroughly, build with AI agents
-- Both: Solve real problems, charge premium prices
 
 ---
 
